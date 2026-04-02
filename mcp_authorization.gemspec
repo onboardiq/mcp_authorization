@@ -3,7 +3,8 @@ require_relative "lib/mcp_authorization/version"
 Gem::Specification.new do |spec|
   spec.name        = "mcp_authorization"
   spec.version     = McpAuthorization::VERSION
-  spec.authors     = ["Andy"]
+  spec.authors     = ["AndyGauge"]
+  spec.homepage    = "https://github.com/onboardiq/mcp_authorization"
   spec.summary     = "Rails engine for MCP tools with per-request schema discrimination"
   spec.description = "Add MCP tool serving to any Rails app. Write @rbs type annotations " \
                      "with @requires(:flag) tags and the gem compiles per-user JSON Schema " \
@@ -18,7 +19,7 @@ Gem::Specification.new do |spec|
     "lib/mcp_authorization/**/*",
     "lib/tasks/mcp_authorization.rake",
     "app/controllers/mcp_authorization/**/*",
-    "LICENSE.txt",
+    "LICENSE",
     "README.md"
   ]
 
