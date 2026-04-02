@@ -1,0 +1,34 @@
+# Minimal stubs for the mcp gem (https://github.com/modelcontextprotocol/ruby-sdk)
+
+module MCP
+  class Tool
+    def self.tool_name: (?String?) -> String?
+    def self.description: (?String?) -> String?
+    def self.input_schema: (Hash[Symbol, untyped]) -> void
+    def self.output_schema: (Hash[Symbol, untyped]) -> void
+    def self.annotations: (**untyped) -> void
+    def self.call: (**untyped) -> untyped
+
+    class Response
+      def initialize: (Array[Hash[Symbol, untyped]]) -> void
+    end
+  end
+
+  class Server
+    attr_accessor transport: untyped
+
+    def initialize: (
+      name: String,
+      version: String,
+      tools: Array[singleton(MCP::Tool)],
+      ?server_context: untyped
+    ) -> void
+
+    module Transports
+      class StreamableHTTPTransport
+        def initialize: (MCP::Server, ?stateless: bool) -> void
+        def handle_request: (untyped) -> [Integer, Hash[String, String], Array[String]]
+      end
+    end
+  end
+end

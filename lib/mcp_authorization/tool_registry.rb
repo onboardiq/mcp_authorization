@@ -1,17 +1,38 @@
 module McpAuthorization
+  # Global registry of all McpAuthorization::Tool subclasses.
+  #
+  # Tools self-register via the +inherited+ hook in Tool, so there is no
+  # manual registration step — defining a class that inherits from Tool is
+  # enough.
+  #
+  # The registry is the entry point for two main operations:
+  #
+  # * *Listing* — +list_tools+ returns JSON-serialisable tool definitions
+  #   filtered by domain and the current user's permissions.
+  #
+  # * *Materializing* — +tool_classes_for+ returns concrete MCP::Tool
+  #   subclasses with per-user schemas baked in, ready to be handed to an
+  #   MCP::Server for request handling.
+  #
   class ToolRegistry
     class << self
+      # Register a tool class. Called automatically by Tool.inherited.
+      #: (Class) -> void
       def register(tool_class)
-        @registered_tools ||= []
-        @registered_tools << tool_class unless @registered_tools.include?(tool_class)
+        tools = (@registered_tools ||= [])
+        tools << tool_class unless tools.include?(tool_class)
       end
 
+      # All registered tool classes. Triggers eager loading on first access.
+      #: () -> Array[singleton(McpAuthorization::Tool)]
       def registered_tools
-        @registered_tools ||= []
-        ensure_tools_loaded! if @registered_tools.empty?
-        @registered_tools
+        tools = (@registered_tools ||= [])
+        ensure_tools_loaded! if tools.empty?
+        tools
       end
 
+      # Force-loads tool directories so tool classes self-register.
+      #: () -> void
       def ensure_tools_loaded!
         return if @registered_tools&.any?
         return unless defined?(Rails)
@@ -22,16 +43,19 @@ module McpAuthorization
         end
       end
 
-      # All registered tool classes, keyed by domain tag
+      # Groups registered tools by their domain tags.
+      #: () -> Hash[String, Array[singleton(McpAuthorization::Tool)]]
       def tools_by_domain
-        registered_tools.each_with_object(Hash.new { |h, k| h[k] = [] }) do |tool_class, map|
+        initial = Hash.new { |h, k| h[k] = [] } #: Hash[String, Array[singleton(McpAuthorization::Tool)]]
+        registered_tools.each_with_object(initial) do |tool_class, map|
           (tool_class._tags || ["default"]).each do |tag|
             map[tag] << tool_class
           end
         end
       end
 
-      # Filtered list_tools output for a given domain and server_context
+      # Tool definitions for +tools/list+, filtered by domain and permissions.
+      #: (domain: String, server_context: untyped) -> Array[Hash[Symbol, untyped]]
       def list_tools(domain:, server_context:)
         candidates = tools_by_domain[domain] || []
         candidates.filter_map do |tool_class|
@@ -39,7 +63,8 @@ module McpAuthorization
         end
       end
 
-      # Return MCP::Tool subclasses materialized for this user's context
+      # Concrete MCP::Tool subclasses with per-user schemas baked in.
+      #: (domain: String, server_context: untyped) -> Array[singleton(MCP::Tool)]
       def tool_classes_for(domain:, server_context:)
         candidates = tools_by_domain[domain] || []
         candidates.filter_map do |tool_class|
@@ -48,11 +73,14 @@ module McpAuthorization
         end
       end
 
-      # Find a tool by name across all domains
+      # Look up a tool by its MCP tool name across all domains.
+      #: (String) -> singleton(McpAuthorization::Tool)?
       def find_tool(name)
         registered_tools.find { |t| t.tool_name == name }
       end
 
+      # Clear the registry. Called by the Engine's reloader on code change.
+      #: () -> void
       def reset!
         @registered_tools = []
       end

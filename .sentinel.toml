@@ -1,0 +1,2 @@
+folders = ["lib", "app"]
+output = "sig/generated"

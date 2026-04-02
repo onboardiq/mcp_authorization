@@ -22,6 +22,9 @@ Gem::Specification.new do |spec|
     "README.md"
   ]
 
-  spec.add_dependency "rails", ">= 7.0"
-  spec.add_dependency "mcp", "~> 0.9"
+  spec.add_dependency "rails", ">= 6.0"
+  spec.add_dependency "mcp", "~> 0.10"
+
+  spec.add_development_dependency "minitest", "~> 5.0"
+  spec.add_development_dependency "rake", "~> 13.0"
 end

@@ -1,0 +1,51 @@
+# Minimal stubs for Rails classes used by the gem
+
+module Rails
+  def self.root: () -> Pathname
+  def self.autoloaders: () -> RailsAutoloaders
+
+  class Engine
+    def self.isolate_namespace: (Module) -> void
+    def self.initializer: (String, ?before: Symbol) { (untyped) -> void } -> void
+
+    # Route DSL methods (available inside routes.prepend block)
+    def self.scope: (String, **untyped) { () -> void } -> void
+    def self.match: (String, **untyped) -> void
+  end
+
+  class Application
+    class Configuration
+      attr_accessor autoload_paths: Array[String]
+      attr_accessor eager_load_paths: Array[String]
+    end
+
+    class RoutesReloader
+    end
+  end
+end
+
+class RailsAutoloaders
+  def main: () -> Zeitwerk::Loader
+end
+
+module Zeitwerk
+  class Loader
+    def eager_load_dir: (untyped) -> void
+  end
+end
+
+module ActionController
+  class Base
+    def self.skip_forgery_protection: (**untyped) -> void
+    def params: () -> Hash[Symbol, untyped]
+    def request: () -> untyped
+    def response: () -> untyped
+    def render: (**untyped) -> void
+  end
+end
+
+module ActiveSupport
+  class Reloader
+    def to_prepare: () { () -> void } -> void
+  end
+end

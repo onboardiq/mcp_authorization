@@ -1,0 +1,46 @@
+# Hand-written supplement for things sentinel can't generate:
+# - Superclass declarations (< MCP::Tool, < Rails::Engine)
+# - alias_method
+# - Class-level instance variables (self.@var)
+# - Constants and inner classes
+# - Class-level attr_reader (sentinel generates instance-level)
+
+module McpAuthorization
+  VERSION: String
+  self.@configuration: Configuration?
+
+  def self.config: () -> Configuration
+
+  class Tool < MCP::Tool
+    class NotAuthorizedError < StandardError
+    end
+
+    # Class-level attr_readers (sentinel generates instance-level)
+    def self._permission: () -> Symbol?
+    def self._tags: () -> Array[String]?
+    def self._contract_handler: () -> untyped
+
+    # Class-level instance variables
+    self.@_permission: Symbol?
+    self.@_tags: Array[String]?
+    self.@_contract_handler: untyped
+    self.@_contract_validated: bool
+    self.@_annotation_hints: Hash[Symbol, untyped]?
+    self.@_annotations_hash: Hash[Symbol, untyped]?
+  end
+
+  class Engine < Rails::Engine
+  end
+
+  class McpController < ActionController::Base
+  end
+
+  class ToolRegistry
+    self.@registered_tools: Array[singleton(McpAuthorization::Tool)]?
+  end
+
+  class RbsSchemaCompiler
+    self.@cache: Hash[untyped, Hash[Symbol, untyped]]?
+    self.@shared_type_cache: Hash[String, untyped]?
+  end
+end
