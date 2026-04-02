@@ -544,7 +544,7 @@ The tradeoff: stateless mode cannot send `notifications/tools/list_changed` or u
 ## Requirements
 
 - Ruby >= 3.1
-- Rails >= 7.0
+- Rails >= 6.0
 - [mcp](https://rubygems.org/gems/mcp) ~> 0.10
 
 ## License
