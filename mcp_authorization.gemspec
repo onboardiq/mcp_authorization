@@ -18,7 +18,7 @@ Gem::Specification.new do |spec|
     "lib/mcp_authorization/**/*",
     "lib/tasks/mcp_authorization.rake",
     "app/controllers/mcp_authorization/**/*",
-    "LICENSE.txt",
+    "LICENSE",
     "README.md"
   ]
 
