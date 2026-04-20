@@ -118,13 +118,30 @@ module McpAuthorization
       end
 
       # Execute the tool by delegating to the handler.
+      #
+      # Inputs are filtered against the user's compiled input schema before
+      # being passed to the handler, and outputs are filtered against the
+      # user's compiled output schema before being returned. Fields and
+      # variants gated by +@requires+ that the user lacks permission for
+      # never reach the handler (in) or cross the wire (out).
       #: (?server_context: untyped?, **untyped) -> untyped
       def call(server_context: nil, **params)
         raise NotAuthorizedError unless server_context && permitted?(server_context)
-        handler_instance(server_context).call(**params)
+        filtered = McpAuthorization::RbsSchemaCompiler.filter_input(
+          _contract_handler, params, server_context: server_context
+        )
+        result = handler_instance(server_context).call(**symbolize_keys(filtered))
+        McpAuthorization::RbsSchemaCompiler.filter_output(
+          _contract_handler, result, server_context: server_context
+        )
       end
 
       # Create an anonymous MCP::Tool subclass with this user's schemas baked in.
+      #
+      # The materialized +call+ enforces the compiled schema at runtime:
+      # input params are stripped of unknown or permission-gated fields
+      # before reaching the handler, and the handler's return value is
+      # projected onto the user's output schema before being serialized.
       #: (untyped) -> Class?
       def materialize_for(server_context)
         defn = to_mcp_definition(server_context: server_context)
@@ -132,6 +149,7 @@ module McpAuthorization
 
         handler = _contract_handler
         ctx = server_context
+        symbolize = method(:symbolize_keys)
 
         Class.new(MCP::Tool) do
           tool_name defn[:name]
@@ -142,10 +160,24 @@ module McpAuthorization
 
           define_singleton_method(:call) do |server_context: nil, **params|
             effective_ctx = server_context || ctx
-            result = handler.new(server_context: effective_ctx).call(**params)
+            filtered_params = McpAuthorization::RbsSchemaCompiler.filter_input(
+              handler, params, server_context: effective_ctx
+            )
+            raw = handler.new(server_context: effective_ctx).call(**symbolize.call(filtered_params))
+            result = McpAuthorization::RbsSchemaCompiler.filter_output(
+              handler, raw, server_context: effective_ctx
+            )
             MCP::Tool::Response.new([ { type: "text", text: result.to_json } ])
           end
         end
+      end
+
+      # Normalize hash keys to symbols so projection output can be splatted
+      # into a handler's kwarg-only +#call+ signature.
+      #: (Hash[untyped, untyped]) -> Hash[Symbol, untyped]
+      def symbolize_keys(hash)
+        return {} unless hash.is_a?(Hash)
+        hash.each_with_object({}) { |(k, v), h| h[k.to_sym] = v }
       end
 
       private
