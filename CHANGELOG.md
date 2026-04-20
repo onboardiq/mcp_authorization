@@ -18,8 +18,12 @@ adheres to [Semantic Versioning](https://semver.org/).
 - If your handler's `#call` quietly accepted params that weren't declared in the `#:` annotation, those will now arrive as `nil`/default values. Declare them (with `@requires` if appropriate) or drop them.
 - If your handler's output included fields that weren't in `@rbs type output`, those are now stripped. Add them to the output type definition if they should ship.
 
-## [0.1.1] - earlier
+## [0.1.1] - 2026-04-02
+
+### Added
 - Added MIT license, homepage, author metadata.
 
-## [0.1.0] - initial release
+## [0.1.0] - 2026-04-01
+
+### Added
 - Initial gem extraction from the monorepo. Rails engine, `RbsSchemaCompiler`, `Tool` / `ToolRegistry`, `DSL` mixin, `McpController`.
