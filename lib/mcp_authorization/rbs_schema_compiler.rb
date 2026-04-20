@@ -81,6 +81,45 @@ module McpAuthorization
         end
       end
 
+      # Filter incoming params against the user's compiled input schema.
+      #
+      # Any key that is not in the schema for this user is dropped — including
+      # +@requires+-gated fields the user lacks permission for, and any
+      # unknown fields not declared in the schema. This is the runtime
+      # enforcement counterpart to the input-shaping that +compile_input+ did.
+      #
+      # @param handler_class [Class]
+      # @param params [Hash] Params as received from the MCP client.
+      # @param server_context [Object] Per-request context.
+      # @return [Hash] Filtered params safe to pass to the handler.
+      #: (untyped, Hash[untyped, untyped], server_context: untyped) -> Hash[untyped, untyped]
+      def filter_input(handler_class, params, server_context:)
+        return params unless params.is_a?(Hash)
+        schema = compile_input_for_filter(handler_class, server_context: server_context)
+        return params unless schema
+        project_against_schema(params, schema, defs_from(schema))
+      end
+
+      # Filter the handler's return value against the user's compiled output
+      # schema. Any field/variant not visible to this user is stripped from
+      # the result.
+      #
+      # This is the runtime counterpart to +compile_output+: even if a handler
+      # bug or auth confusion causes it to emit fields the user shouldn't see,
+      # they never cross the wire. Passes the result through unchanged if no
+      # +@rbs type output+ is defined.
+      #
+      # @param handler_class [Class]
+      # @param result [Object] Handler return value (hash/array/primitive).
+      # @param server_context [Object] Per-request context.
+      # @return [Object] Projected result, matching the user's output schema.
+      #: (untyped, untyped, server_context: untyped) -> untyped
+      def filter_output(handler_class, result, server_context:)
+        schema = compile_output_for_filter(handler_class, server_context: server_context)
+        return result unless schema
+        project_against_schema(result, schema, defs_from(schema))
+      end
+
       # Strip JSON Schema keywords unsupported by Anthropic's strict tool
       # use mode, and add additionalProperties: false to all objects.
       # Converts oneOf to anyOf (strict mode supports anyOf but not oneOf).
@@ -151,6 +190,132 @@ module McpAuthorization
       end
 
       private
+
+      # ---------------------------------------------------------------
+      # Runtime enforcement — project values against the user's schema
+      # ---------------------------------------------------------------
+
+      # Like +compile_input+ but keeps +$defs+ inline-resolvable and skips
+      # the LLM-facing +strict_sanitize+ pass. Used by +filter_input+ so
+      # enforcement operates on the same semantic schema the LLM was given
+      # without any strict-mode transforms that would lose type info.
+      #: (untyped, server_context: untyped) -> Hash[Symbol, untyped]
+      def compile_input_for_filter(handler_class, server_context:)
+        cached = cache_for(handler_class)
+
+        schema = if cached[:raw_input]&.dig(:kind) == :record
+          compile_tagged_record(cached[:raw_input][:body], cached[:type_map], server_context)
+        else
+          build_input_schema(
+            filter_call_signature(cached[:call_params], cached[:type_map], server_context)
+          )
+        end
+
+        with_ref_injection(schema, cached[:type_map])
+      end
+
+      # Like +compile_output+ but skips +strict_sanitize+. Returns nil when
+      # the handler has no +# @rbs type output+ declaration.
+      #: (untyped, server_context: untyped) -> Hash[Symbol, untyped]?
+      def compile_output_for_filter(handler_class, server_context:)
+        cached = cache_for(handler_class)
+        return nil unless cached[:raw_output]&.dig(:kind) == :union
+
+        schema = compile_tagged_union(cached[:raw_output][:body], cached[:type_map], server_context)
+        with_ref_injection(schema, cached[:type_map])
+      end
+
+      # Extract the +$defs+ table from a compiled schema for +$ref+ resolution.
+      #: (Hash[Symbol, untyped]?) -> Hash[String, Hash[Symbol, untyped]]
+      def defs_from(schema)
+        return {} unless schema.is_a?(Hash)
+        (schema[:"$defs"] || {}).each_with_object({}) { |(k, v), h| h[k.to_s] = v }
+      end
+
+      # If +schema+ is a +$ref+ pointer, resolve it against +defs+. Otherwise
+      # return the schema unchanged.
+      #: (Hash[Symbol, untyped]?, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]?
+      def resolve_ref(schema, defs)
+        return schema unless schema.is_a?(Hash)
+        ref = schema[:"$ref"] || schema["$ref"]
+        return schema unless ref
+        name = ref.to_s.sub(%r{\A#/\$defs/}, "")
+        defs[name] || schema
+      end
+
+      # Recursively project a runtime value onto a compiled JSON Schema.
+      #
+      # The semantics: the schema is authoritative — the result only contains
+      # what the schema allows for this user.
+      #
+      # * Objects keep only declared +properties+; everything else is dropped.
+      # * Arrays recurse into +items+.
+      # * +oneOf+/+anyOf+ picks the best-matching variant (by present/required
+      #   keys) and projects against it; unmatched variants are ignored.
+      # * Primitives (and un-typed schemas) pass through unchanged.
+      #
+      # This is how +@requires+-gated fields are enforced at runtime: they
+      # are already absent from +schema[:properties]+ for a user who lacks
+      # the flag, so the projection simply drops them from the value.
+      #: (untyped, Hash[Symbol, untyped]?, Hash[String, Hash[Symbol, untyped]]) -> untyped
+      def project_against_schema(value, schema, defs)
+        return value if schema.nil?
+        schema = resolve_ref(schema, defs)
+        return value unless schema.is_a?(Hash)
+
+        variants = schema[:oneOf] || schema[:anyOf]
+        if variants.is_a?(Array) && !variants.empty?
+          resolved = variants.map { |v| resolve_ref(v, defs) }
+          best = best_variant_for(value, resolved)
+          return best ? project_against_schema(value, best, defs) : value
+        end
+
+        case schema[:type]
+        when "object"
+          return value unless value.is_a?(Hash)
+          props = schema[:properties] || {}
+          value.each_with_object({}) do |(k, v), acc|
+            prop_schema = props[k.to_sym] || props[k.to_s] || props[k]
+            next unless prop_schema
+            acc[k] = project_against_schema(v, prop_schema, defs)
+          end
+        when "array"
+          return value unless value.is_a?(Array)
+          items = schema[:items]
+          items ? value.map { |v| project_against_schema(v, items, defs) } : value
+        else
+          value
+        end
+      end
+
+      # Choose the best-matching variant of a union for a given value.
+      #
+      # Scoring: count how many of the value's keys appear in the variant's
+      # +properties+, minus how many are unknown. Disqualify variants missing
+      # any of the value's keys from their +required+ list that isn't present.
+      # Returns nil if no variant can accommodate the value — in which case
+      # the caller should leave the value unchanged (defensive pass-through).
+      #: (untyped, Array[Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]?
+      def best_variant_for(value, variants)
+        return variants.first unless value.is_a?(Hash)
+
+        scored = variants.filter_map do |variant|
+          next unless variant.is_a?(Hash) && variant[:type] == "object"
+          props = variant[:properties] || {}
+          prop_keys = props.keys.map(&:to_s)
+          value_keys = value.keys.map(&:to_s)
+          required = (variant[:required] || []).map(&:to_s)
+
+          next if (required - value_keys).any?
+
+          known = (value_keys & prop_keys).size
+          unknown = (value_keys - prop_keys).size
+          [known - unknown, variant]
+        end
+
+        return nil if scored.empty?
+        scored.max_by { |score, _| score }&.last
+      end
 
       # ---------------------------------------------------------------
       # Tag extraction — unified parser for all @tag(...) annotations

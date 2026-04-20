@@ -11,10 +11,19 @@ The gem gives you three independent controls over what each user sees:
 | Layer | Mechanism | Effect |
 |---|---|---|
 | **Tool visibility** | `authorization :manage_workflows` on the tool class | Tool hidden entirely from users who lack the flag |
-| **Input fields** | `@requires(:backward_routing)` on a param in `#:` annotation | Field excluded from the input schema |
-| **Output variants** | `@requires(:backward_routing)` on a variant in `@rbs type output` | Variant excluded from the `oneOf` |
+| **Input fields** | `@requires(:backward_routing)` on a param in `#:` annotation | Field excluded from the input schema *and* stripped from inbound params at call time |
+| **Output variants** | `@requires(:backward_routing)` on a variant in `@rbs type output` | Variant excluded from the `oneOf` *and* fields projected out of the handler's return value before it crosses the wire |
 
 All three go through the same predicate: `current_user.can?(:symbol)`. The symbol can represent a permission, a feature flag, a plan tier, an A/B bucket -- whatever your app puts behind it.
+
+### Enforcement, not just shaping
+
+`@requires` is a security boundary, not a hint. At tool-call time the gem:
+
+- **Filters inbound params** against the user's compiled input schema. Gated fields, and any keys not declared in the schema at all, are dropped before the handler's `#call` is invoked. A handler that takes `force:` gated behind `@requires(:admin)` will see `force: false` (its default) for non-admins even if the MCP client sends `force: true` in the raw JSON-RPC payload.
+- **Projects the handler's return value** onto the user's compiled output schema. A variant hidden by `@requires` has its shape unavailable, so if the handler erroneously emits that variant's extra fields, they are stripped before serialization. A handler bug or refactor accident cannot leak admin-only fields to a non-admin.
+
+This means handler authors don't have to remember to re-check `can?` at every branch -- the schema *is* the boundary. `can?` inside `#call` is still useful for logic that changes behavior (not just field visibility), but it is no longer load-bearing for security.
 
 ## Install
 
