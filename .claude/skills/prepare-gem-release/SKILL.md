@@ -51,10 +51,6 @@ Edit `lib/<name>/version.rb` — change the `VERSION` constant to the new versio
 
 ## Step 4 — Draft the CHANGELOG
 
-Create `CHANGELOG.md` if it doesn't exist (see template below). If it does exist, prepend a new section for this version.
-
-**Source the entries from merged PRs since the last tag**, not from commit messages. PRs have titles/bodies curated for humans; commits are noisier. Pull them with:
-
 ```sh
 LAST_TAG=$(git describe --tags --abbrev=0)
 LAST_TAG_DATE=$(git log -1 --format=%aI "$LAST_TAG")
@@ -97,12 +93,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 Open `<name>.gemspec`. Find the `spec.files = Dir[...]` (or array literal) block. If `"CHANGELOG.md"` isn't listed alongside `"README.md"` / `"LICENSE"`, add it. Without this line the CHANGELOG won't be in the published gem — consumers lose the migration notes when they need them most.
 
-## Step 6 — Smoke checks
+Run both checks:
 
-Run in parallel:
-
-```sh
-bundle exec rake test
 gem build <name>.gemspec
 ```
 
