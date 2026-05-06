@@ -167,7 +167,12 @@ module McpAuthorization
             result = McpAuthorization::RbsSchemaCompiler.filter_output(
               handler, raw, server_context: effective_ctx
             )
-            MCP::Tool::Response.new([ { type: "text", text: result.to_json } ])
+            response_args = [{ type: "text", text: result.to_json }]
+            if defn[:outputSchema]
+              MCP::Tool::Response.new(response_args, structured_content: result)
+            else
+              MCP::Tool::Response.new(response_args)
+            end
           end
         end
       end
