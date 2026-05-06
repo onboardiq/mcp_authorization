@@ -93,8 +93,12 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 Open `<name>.gemspec`. Find the `spec.files = Dir[...]` (or array literal) block. If `"CHANGELOG.md"` isn't listed alongside `"README.md"` / `"LICENSE"`, add it. Without this line the CHANGELOG won't be in the published gem — consumers lose the migration notes when they need them most.
 
+## Step 6 — Run tests and smoke-build
+
 Run both checks:
 
+```sh
+bundle exec rake test
 gem build <name>.gemspec
 ```
 
