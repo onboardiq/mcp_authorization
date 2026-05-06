@@ -20,7 +20,8 @@ Gem::Specification.new do |spec|
     "lib/tasks/mcp_authorization.rake",
     "app/controllers/mcp_authorization/**/*",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ]
 
   spec.add_dependency "rails", ">= 6.0"
