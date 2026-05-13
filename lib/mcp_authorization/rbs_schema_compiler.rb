@@ -339,7 +339,7 @@ module McpAuthorization
       # @return [Array(String, Hash)] +[clean_type, tags_hash]+
       #
       # Supported tags:
-      #   @requires(:symbol)      -> { requires: :symbol }  (also added to :predicates)
+      #   @requires(:symbol)      -> added to :predicates (calls server_context.requires?)
       #   @depends_on(:field)     -> { depends_on: "field" }
       #   @min(n)                 -> { min: n }
       #   @max(n)                 -> { max: n }
@@ -608,8 +608,8 @@ module McpAuthorization
         available = server_context.class.public_instance_methods(false)
           .select { |m| m.to_s.end_with?("?") }
           .map { |m| m.to_s.chomp("?") }
-        suggestion = available.min_by { |a| levenshtein(a, name) }
-        hint = suggestion ? " Did you mean @#{suggestion}?" : ""
+        best = available.min_by { |a| levenshtein(a, name) }
+        hint = best && levenshtein(best, name) <= 3 ? " Did you mean @#{best}?" : ""
         Rails.logger&.warn("[McpAuthorization] Predicate '#{name}?' not found on #{server_context.class}.#{hint} Field will be shown to all users.")
       end
 
