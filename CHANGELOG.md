@@ -4,6 +4,12 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-05-13
+
+### Fixed
+- `tools/call` responses now include `structuredContent` when the tool declares an `outputSchema` via `dynamic_contract`. Previously the response carried only text content, which spec-compliant clients rejected as a validation error. (#6)
+- `RbsSchemaCompiler` now finds the handler's source file when `#call` is wrapped via `Module#prepend` (param coercion, instrumentation, `ActiveSupport::Concern`, tracing libraries). It walks `UnboundMethod#super_method` past prepended modules until the owner is the handler class itself, so `# @rbs type` and `#:` annotations are read from the right file instead of raising a contract violation. (#8)
+
 ## [0.2.0] - 2026-04-20
 
 ### Added
