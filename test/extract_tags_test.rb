@@ -8,7 +8,7 @@ class ExtractTagsTest < Minitest::Test
   def test_requires
     type, tags = C.send(:extract_tags, "String @requires(:admin)")
     assert_equal "String", type
-    assert_equal :admin, tags[:requires]
+    assert_equal [{ name: "requires", value: "admin" }], tags[:predicates]
   end
 
   def test_depends_on
@@ -193,5 +193,37 @@ class ExtractTagsTest < Minitest::Test
     type, tags = C.send(:extract_tags, "String")
     assert_equal "String", type
     assert_empty tags
+  end
+
+  # --- Generic predicate tags ---
+
+  def test_unknown_tag_becomes_predicate
+    type, tags = C.send(:extract_tags, "String @feature(:premium)")
+    assert_equal "String", type
+    assert_equal [{ name: "feature", value: "premium" }], tags[:predicates]
+  end
+
+  def test_requires_stored_only_as_predicate
+    _, tags = C.send(:extract_tags, "String @requires(:admin)")
+    refute tags.key?(:requires), "tags[:requires] should not exist — requires goes through generic predicate path"
+    assert_equal [{ name: "requires", value: "admin" }], tags[:predicates]
+  end
+
+  def test_multiple_predicates
+    _, tags = C.send(:extract_tags, "String @requires(:admin) @feature(:premium)")
+    assert_equal 2, tags[:predicates].size
+    names = tags[:predicates].map { |p| p[:name] }
+    assert_includes names, "requires"
+    assert_includes names, "feature"
+  end
+
+  def test_predicate_colon_prefix_stripped
+    _, tags = C.send(:extract_tags, "String @tier(:enterprise)")
+    assert_equal [{ name: "tier", value: "enterprise" }], tags[:predicates]
+  end
+
+  def test_predicate_without_colon_prefix
+    _, tags = C.send(:extract_tags, "String @beta(new_ui)")
+    assert_equal [{ name: "beta", value: "new_ui" }], tags[:predicates]
   end
 end

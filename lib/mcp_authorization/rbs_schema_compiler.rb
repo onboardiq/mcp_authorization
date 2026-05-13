@@ -339,7 +339,7 @@ module McpAuthorization
       # @return [Array(String, Hash)] +[clean_type, tags_hash]+
       #
       # Supported tags:
-      #   @requires(:symbol)      -> { requires: :symbol }
+      #   @requires(:symbol)      -> { requires: :symbol }  (also added to :predicates)
       #   @depends_on(:field)     -> { depends_on: "field" }
       #   @min(n)                 -> { min: n }
       #   @max(n)                 -> { max: n }
@@ -360,6 +360,14 @@ module McpAuthorization
       #   @closed() / @strict()   -> { closed: true }
       #   @media_type(type)       -> { media_type: "type" }
       #   @encoding(enc)          -> { encoding: "enc" }
+      #
+      # Any tag not listed above is treated as a **predicate filter**:
+      #   @feature(:flag)         -> added to predicates, calls server_context.feature?(:flag)
+      #   @tier(:enterprise)      -> added to predicates, calls server_context.tier?(:enterprise)
+      #   @custom(:value)         -> added to predicates, calls server_context.custom?(:value)
+      #
+      # Predicate filters exclude the field/variant from the schema when the
+      # predicate returns false. The server_context must respond to +tag_name?+.
       #: (String) -> [String, Hash[Symbol, untyped]]
       def extract_tags(type_str)
         tags = {}
@@ -370,7 +378,7 @@ module McpAuthorization
 
           case tag_name
           when "requires"
-            tags[:requires] = tag_value.delete_prefix(":").to_sym
+            (tags[:predicates] ||= []) << { name: "requires", value: tag_value.delete_prefix(":") }
           when "depends_on"
             tags[:depends_on] = tag_value.delete_prefix(":")
           when "min"
@@ -411,6 +419,8 @@ module McpAuthorization
             tags[:media_type] = tag_value
           when "encoding"
             tags[:encoding] = tag_value
+          else
+            (tags[:predicates] ||= []) << { name: tag_name, value: tag_value.delete_prefix(":") }
           end
         end
 
@@ -543,18 +553,93 @@ module McpAuthorization
       end
 
       # ---------------------------------------------------------------
-      # @requires filtering — the per-request compile phase
+      # Predicate filtering — the per-request compile phase
       # ---------------------------------------------------------------
 
-      # Compile a record-style input type (+# @rbs type input = { ... }+)
-      # with field-level +@requires+ filtering.
+      # Returns true if any predicate tag on a field/variant evaluates to
+      # false, meaning the field should be excluded from the schema.
       #
-      # Fields whose +@requires+ flag the current user lacks are silently
-      # omitted from the resulting JSON Schema, so the LLM never sees them.
+      # For each predicate, calls +server_context.tag_name?(value)+.
+      # If the server_context doesn't respond to the method, the predicate
+      # is skipped (fail-open — unknown predicates don't block). This is
+      # intentional: predicates shape the schema for the LLM, they are not
+      # a security boundary. Hiding a field by accident (typo) is worse
+      # than showing one extra field. Runtime enforcement (+filter_input+)
+      # is the actual security layer.
+      #
+      # Special case: +@requires+ falls back to +current_user.can?+ when
+      # the server_context lacks a +requires?+ method, for backward
+      # compatibility with consumers that haven't migrated to predicates.
+      #
+      # Exceptions from individual predicates are rescued and logged so
+      # that a single broken predicate doesn't crash the entire tools/list.
+      #
+      # @param tags [Hash] Parsed tags from +extract_tags+.
+      # @param server_context [Object] Per-request context.
+      # @return [Boolean] true if the field should be excluded.
+      #: (Hash[Symbol, untyped], untyped) -> bool
+      def predicate_excluded?(tags, server_context)
+        return false unless tags[:predicates] && server_context
+        tags[:predicates].any? do |pred|
+          method = :"#{pred[:name]}?"
+          if server_context.respond_to?(method)
+            !server_context.public_send(method, pred[:value])
+          elsif pred[:name] == "requires" && server_context.respond_to?(:current_user)
+            # Backward compat: fall back to direct user permission check
+            !server_context.current_user&.can?(pred[:value].to_sym)
+          else
+            warn_unknown_predicate(pred[:name], server_context)
+            false # Fail-open: include the field
+          end
+        rescue => e
+          if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+            Rails.logger.error("[McpAuthorization] predicate #{pred[:name]}?(#{pred[:value]}) raised: #{e.message}")
+          end
+          false # Fail-open on error: include the field
+        end
+      end
+
+      # Emit a development-mode warning when a predicate method is not
+      # found on the server_context. Helps catch typos like @feture(:x).
+      #: (String, untyped) -> void
+      def warn_unknown_predicate(name, server_context)
+        return unless defined?(Rails) && Rails.respond_to?(:env) && Rails.env.local?
+
+        available = server_context.class.public_instance_methods(false)
+          .select { |m| m.to_s.end_with?("?") }
+          .map { |m| m.to_s.chomp("?") }
+        suggestion = available.min_by { |a| levenshtein(a, name) }
+        hint = suggestion ? " Did you mean @#{suggestion}?" : ""
+        Rails.logger&.warn("[McpAuthorization] Predicate '#{name}?' not found on #{server_context.class}.#{hint} Field will be shown to all users.")
+      end
+
+      # Minimal Levenshtein distance for typo suggestions.
+      #: (String, String) -> Integer
+      def levenshtein(a, b)
+        m, n = a.length, b.length
+        d = Array.new(m + 1) { |i| i }
+        (1..n).each do |j|
+          prev = d[0]
+          d[0] = j
+          (1..m).each do |i|
+            cost = a[i - 1] == b[j - 1] ? 0 : 1
+            temp = d[i]
+            d[i] = [d[i] + 1, d[i - 1] + 1, prev + cost].min
+            prev = temp
+          end
+        end
+        d[m]
+      end
+
+      # Compile a record-style input type (+# @rbs type input = { ... }+)
+      # with field-level predicate filtering.
+      #
+      # Fields whose predicate tags (e.g. +@requires+, +@feature+) evaluate
+      # to false are silently omitted from the resulting JSON Schema.
       #
       # @param raw_body [String] The raw record body, e.g. +"{name: String, force: bool @requires(:admin)}"+.
       # @param type_map [Hash] Resolved type definitions for +$ref+ lookups.
-      # @param server_context [Object] Per-request context with +current_user+.
+      # @param server_context [Object] Per-request context.
       # @return [Hash] JSON Schema object with +properties+, +required+, etc.
       #: (String, Hash[String, Hash[Symbol, untyped]], untyped) -> Hash[Symbol, untyped]
       def compile_tagged_record(raw_body, type_map, server_context)
@@ -568,7 +653,7 @@ module McpAuthorization
           key, type_str = match[0].to_s, match[1].to_s
           type_str, tags = extract_tags(type_str.strip)
 
-          next if tags[:requires] && !server_context.current_user.can?(tags[:requires])
+          next if predicate_excluded?(tags, server_context)
 
           optional = key.end_with?("?")
           clean_key = key.delete_suffix("?")
@@ -590,10 +675,10 @@ module McpAuthorization
       end
 
       # Compile a union-style output type (+# @rbs type output = success | admin_detail @requires(:admin)+)
-      # with variant-level +@requires+ filtering.
+      # with variant-level predicate filtering.
       #
-      # Each union variant (separated by +|+) can carry its own +@requires+
-      # tag. Variants the user lacks permission for are dropped entirely.
+      # Each union variant (separated by +|+) can carry its own predicate
+      # tags. Variants whose predicates evaluate to false are dropped entirely.
       # If only one variant remains, it's returned directly (no +oneOf+
       # wrapper). If zero remain, a bare +{type: "object"}+ fallback is used.
       #
@@ -607,7 +692,7 @@ module McpAuthorization
 
         filtered = parts.filter_map do |part|
           part, tags = extract_tags(part)
-          next nil if tags[:requires] && !server_context.current_user.can?(tags[:requires])
+          next nil if predicate_excluded?(tags, server_context)
           resolve_type(part, type_map)
         end
 
@@ -618,7 +703,7 @@ module McpAuthorization
         end
       end
 
-      # Filter method-signature parameters by +@requires+ tags and build
+      # Filter method-signature parameters by predicate tags and build
       # the input JSON Schema. This is the path used when the handler defines
       # its schema via a +#:+ annotation above +def call+ rather than an
       # explicit +# @rbs type input = { ... }+.
@@ -634,9 +719,7 @@ module McpAuthorization
         dependent_required = {}
 
         call_params.each do |param|
-          if param[:tags][:requires] && server_context
-            next unless server_context.current_user.can?(param[:tags][:requires])
-          end
+          next if predicate_excluded?(param[:tags], server_context)
 
           schema = rbs_type_to_json_schema(param[:type], type_map)
           properties[param[:name].to_sym] = apply_tags(schema, param[:tags], server_context: server_context)

@@ -429,12 +429,30 @@ Tag any field in a `#:` annotation or `@rbs type` record to add JSON Schema cons
 | `@read_only()` | `readOnly: true` | Read-only field |
 | `@write_only()` | `writeOnly: true` | Write-only field |
 
-**Authorization:**
+**Authorization & predicate filters:**
 
 | Tag | Purpose |
 |---|---|
-| `@requires(:flag)` | Field/variant excluded when `can?(:flag)` is false |
+| `@requires(:flag)` | Field/variant excluded when `server_context.requires?(:flag)` returns false (delegates to `current_user.can?`) |
+| `@feature(:flag)` | Field/variant excluded when `server_context.feature?(:flag)` returns false (account-level feature flags) |
 | `@depends_on(:field)` | Emits `dependentRequired` — field only required when parent field is present |
+
+Any `@tag(:value)` not in the known constraint list above is a **generic predicate filter**. At schema compile time, the gem calls `server_context.tag_name?(value)` — if it returns false, the field is excluded. If `server_context` doesn't respond to the method, the predicate is skipped (permissive).
+
+This makes the gem infinitely extensible. Define any predicate on your server context:
+
+```ruby
+# In your app's server context:
+def feature?(flag) = current_account.feature_enabled?(flag.to_s)
+def tier?(name) = current_account.plan_tier?(name.to_s)
+def beta?(flag) = current_account.beta_enrolled?(flag.to_s)
+
+# In your handler:
+#: (?status: "active" | "inactive" | "unlisted" @feature(:opening_status_v2)) -> output
+#: (?force: bool @requires(:admin) @tier(:enterprise)) -> output
+```
+
+Multiple predicates on the same field are AND-ed — all must pass for the field to appear.
 
 **Niche:**
 
