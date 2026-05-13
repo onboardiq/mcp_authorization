@@ -1045,15 +1045,28 @@ module McpAuthorization
       # +Method#source_location+ on its +#call+ method. This is how the
       # compiler finds the RBS annotations to parse.
       #
+      # When host applications wrap +#call+ via +prepend+ (param coercion,
+      # instrumentation, error mapping, ActiveSupport::Concern patterns,
+      # observability libraries), +source_location+ on the topmost method
+      # points at the wrapper, not the handler. Walk +super_method+ down
+      # past prepended modules until we find the handler's own definition.
+      #
       # @param handler_class [Class]
       # @return [String, nil] Absolute file path, or nil.
       #: (untyped) -> String?
       def find_source_file(handler_class)
-        if handler_class.method_defined?(:call)
-          handler_class.instance_method(:call).source_location&.first
+        um = if handler_class.method_defined?(:call) || handler_class.private_method_defined?(:call)
+          handler_class.instance_method(:call)
         elsif handler_class.respond_to?(:call)
-          handler_class.method(:call).source_location&.first
+          handler_class.method(:call)
         end
+        return nil unless um
+
+        while um.owner != handler_class && um.super_method
+          um = um.super_method
+        end
+
+        um.source_location&.first
       end
 
       # Check whether a string has balanced curly braces. Used to detect
