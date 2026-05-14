@@ -607,7 +607,7 @@ module McpAuthorization
       def warn_unknown_predicate(name, server_context)
         return unless defined?(Rails) && Rails.respond_to?(:env) && Rails.env.local?
 
-        available = server_context.class.public_instance_methods(false)
+        available = server_context.class.public_instance_methods(true)
           .select { |m| m.to_s.end_with?("?") }
           .map { |m| m.to_s.chomp("?") }
         best = available.min_by { |a| levenshtein(a, name) }

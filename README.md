@@ -433,7 +433,7 @@ Tag any field in a `#:` annotation or `@rbs type` record to add JSON Schema cons
 
 | Tag | Purpose |
 |---|---|
-| `@requires(:flag)` | Field/variant excluded when `server_context.requires?(:flag)` returns false (delegates to `current_user.can?`) |
+| `@requires(:flag)` | Field/variant excluded when `server_context.requires?(:flag)` returns false. Legacy fallback: if `requires?` is not defined, falls back to `current_user.can?(:flag)`. |
 | `@feature(:flag)` | Field/variant excluded when `server_context.feature?(:flag)` returns false (account-level feature flags) |
 | `@depends_on(:field)` | Emits `dependentRequired` — field only required when parent field is present |
 
@@ -443,6 +443,7 @@ This makes the gem infinitely extensible. Define any predicate on your server co
 
 ```ruby
 # In your app's server context:
+def requires?(flag) = current_user.can?(flag.to_sym)
 def feature?(flag) = current_account.feature_enabled?(flag.to_s)
 def tier?(name) = current_account.plan_tier?(name.to_s)
 def beta?(flag) = current_account.beta_enrolled?(flag.to_s)
