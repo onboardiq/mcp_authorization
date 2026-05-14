@@ -585,7 +585,9 @@ module McpAuthorization
           if server_context.respond_to?(method)
             !server_context.public_send(method, pred[:value])
           elsif pred[:name] == "requires" && server_context.respond_to?(:current_user)
-            # Backward compat: fall back to direct user permission check
+            # Backward compat: fall back to direct user permission check.
+            # Note: nil current_user → &.can? returns nil → !nil is true → field excluded.
+            # This is intentional: no user = no permissions = hide restricted fields.
             !server_context.current_user&.can?(pred[:value].to_sym)
           else
             warn_unknown_predicate(pred[:name], server_context)
