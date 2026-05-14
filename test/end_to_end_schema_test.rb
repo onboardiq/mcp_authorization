@@ -148,6 +148,117 @@ class EndToEndSchemaTest < Minitest::Test
     assert_equal "en-US", schema[:default]
   end
 
+  # --- Generic predicate filtering (record) ---
+
+  def test_record_excludes_feature_gated_field
+    ctx = StubContext.new([], features: [])
+    schema = C.send(:compile_tagged_record, "{ name: String, tier: String @feature(:premium) }", {}, ctx)
+    assert schema[:properties].key?(:name)
+    refute schema[:properties].key?(:tier)
+  end
+
+  def test_record_includes_feature_gated_field_when_enabled
+    ctx = StubContext.new([], features: ["premium"])
+    schema = C.send(:compile_tagged_record, "{ name: String, tier: String @feature(:premium) }", {}, ctx)
+    assert schema[:properties].key?(:name)
+    assert schema[:properties].key?(:tier)
+  end
+
+  def test_record_requires_backwards_compat_via_predicate
+    ctx = StubContext.new([], features: [])
+    schema = C.send(:compile_tagged_record, "{ name: String, secret: String @requires(:admin) }", {}, ctx)
+    assert schema[:properties].key?(:name)
+    refute schema[:properties].key?(:secret)
+  end
+
+  def test_record_requires_passes_via_predicate
+    ctx = StubContext.new([:admin])
+    schema = C.send(:compile_tagged_record, "{ name: String, secret: String @requires(:admin) }", {}, ctx)
+    assert schema[:properties].key?(:name)
+    assert schema[:properties].key?(:secret)
+  end
+
+  def test_combined_requires_and_feature_both_must_pass
+    ctx = StubContext.new([:admin], features: [])
+    schema = C.send(:compile_tagged_record, "{ force: bool @requires(:admin) @feature(:bulk_ops) }", {}, ctx)
+    refute schema[:properties].key?(:force), "should be excluded — feature not enabled"
+  end
+
+  def test_combined_requires_and_feature_both_pass
+    ctx = StubContext.new([:admin], features: ["bulk_ops"])
+    schema = C.send(:compile_tagged_record, "{ force: bool @requires(:admin) @feature(:bulk_ops) }", {}, ctx)
+    assert schema[:properties].key?(:force)
+  end
+
+  def test_unknown_predicate_skipped_when_context_lacks_method
+    ctx = StubContext.new([])
+    schema = C.send(:compile_tagged_record, "{ name: String, x: String @tier(:enterprise) }", {}, ctx)
+    # StubContext doesn't have tier?, so the predicate is skipped (permissive)
+    assert schema[:properties].key?(:x)
+  end
+
+  # --- Generic predicate filtering (union) ---
+
+  def test_union_excludes_feature_gated_variant
+    ctx = StubContext.new([], features: [])
+    type_map = { "basic" => { type: "object", properties: { name: { type: "string" } } },
+                 "premium_detail" => { type: "object", properties: { tier: { type: "string" } } } }
+    schema = C.send(:compile_tagged_union, "basic | premium_detail @feature(:premium)", type_map, ctx)
+    # Only basic remains — returned directly without oneOf wrapper
+    assert_equal "object", schema[:type]
+    assert schema[:properties].key?(:name)
+    refute schema.key?(:oneOf)
+  end
+
+  def test_union_includes_feature_gated_variant_when_enabled
+    ctx = StubContext.new([], features: ["premium"])
+    type_map = { "basic" => { type: "object", properties: { name: { type: "string" } } },
+                 "premium_detail" => { type: "object", properties: { tier: { type: "string" } } } }
+    schema = C.send(:compile_tagged_union, "basic | premium_detail @feature(:premium)", type_map, ctx)
+    assert schema.key?(:oneOf)
+    assert_equal 2, schema[:oneOf].size
+  end
+
+  # --- Custom predicate (not requires/feature) ---
+
+  def test_custom_predicate_excludes_field
+    ctx = StubContextWithTier.new([], tier: nil)
+    schema = C.send(:compile_tagged_record, "{ name: String, x: String @tier(:enterprise) }", {}, ctx)
+    refute schema[:properties].key?(:x)
+  end
+
+  def test_custom_predicate_includes_field
+    ctx = StubContextWithTier.new([], tier: "enterprise")
+    schema = C.send(:compile_tagged_record, "{ name: String, x: String @tier(:enterprise) }", {}, ctx)
+    assert schema[:properties].key?(:x)
+  end
+
+  # --- @requires backward compat (OpenStruct without requires?) ---
+
+  def test_requires_falls_back_to_current_user_can
+    # Simulate old-style server_context (OpenStruct, no requires? method)
+    user = StubUser.new([:admin])
+    ctx = OpenStruct.new(current_user: user)
+    schema = C.send(:compile_tagged_record, "{ name: String, secret: String @requires(:admin) }", {}, ctx)
+    assert schema[:properties].key?(:secret), "should fall back to current_user.can?"
+  end
+
+  def test_requires_fallback_excludes_when_no_permission
+    user = StubUser.new([])
+    ctx = OpenStruct.new(current_user: user)
+    schema = C.send(:compile_tagged_record, "{ name: String, secret: String @requires(:admin) }", {}, ctx)
+    refute schema[:properties].key?(:secret), "should exclude — user lacks :admin"
+  end
+
+  # --- Error isolation ---
+
+  def test_predicate_error_does_not_crash
+    ctx = StubContextWithBrokenPredicate.new
+    # broken? raises RuntimeError, but field should still be included (fail-open)
+    schema = C.send(:compile_tagged_record, "{ name: String, x: String @broken(:anything) }", {}, ctx)
+    assert schema[:properties].key?(:x), "should fail-open when predicate raises"
+  end
+
   private
 
   # Simulate the full pipeline for a single field type annotation.

@@ -83,7 +83,41 @@ end
 class StubContext
   attr_reader :current_user
 
-  def initialize(permissions = [], defaults: {})
+  def initialize(permissions = [], defaults: {}, features: [])
     @current_user = StubUser.new(permissions, defaults: defaults)
+    @features = features.map(&:to_s)
+  end
+
+  def requires?(flag)
+    current_user.can?(flag.to_sym)
+  end
+
+  def feature?(flag)
+    @features.include?(flag.to_s)
+  end
+end
+
+# Stub context with a custom predicate (tier?) to test generic metaprogramming path
+class StubContextWithTier < StubContext
+  def initialize(permissions = [], tier: nil, **kwargs)
+    super(permissions, **kwargs)
+    @tier = tier
+  end
+
+  def tier?(value)
+    @tier == value.to_s
+  end
+end
+
+# Stub context with a predicate that raises, to test error isolation
+class StubContextWithBrokenPredicate
+  attr_reader :current_user
+
+  def initialize
+    @current_user = StubUser.new
+  end
+
+  def broken?(_value)
+    raise "boom"
   end
 end

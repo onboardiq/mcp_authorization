@@ -22,6 +22,20 @@ module McpAuthorization
   #   current_user.can?(:symbol)              # required — gates field/tool visibility
   #   current_user.default_for(:symbol)       # optional — populates @default_for tags
   #
+  # The context object itself can implement predicate methods for generic
+  # tag filtering. Any +@tag(:value)+ not in the known constraint list
+  # calls +context.tag?(value)+:
+  #
+  #   context.requires?(flag)                 # optional — for @requires, falls back to current_user.can?
+  #   context.feature?(flag)                  # optional — for @feature (account-level feature flags)
+  #   context.tier?(name)                     # optional — for @tier (plan-level gating)
+  #
+  # For public/anonymous MCP interfaces, supply a context with minimum-viable
+  # permissions rather than +current_user: nil+. A nil user causes +@requires+
+  # fields to be silently excluded (no user = no permissions).
+  #
+  # See RbsSchemaCompiler.predicate_excluded? for the full protocol.
+  #
   class Configuration
     # Server name reported in the MCP +initialize+ handshake.
     #: String

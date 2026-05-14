@@ -4,6 +4,23 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-05-14
+
+### Added
+- **Generic predicate tags.** Any `@tag(:value)` annotation not in the known constraint list becomes a predicate filter: the compiler calls `server_context.tag_name?(value)` at schema compile time. If the predicate returns false, the field/variant is excluded from the JSON Schema. This makes the gem infinitely extensible — define `feature?`, `tier?`, `beta?`, or any predicate on your server context without gem changes.
+- Backward-compat fallback for `@requires`: if the server context lacks a `requires?` method, the compiler falls back to `server_context.current_user.can?(:flag)` directly. No deploy-ordering constraint.
+- Error isolation: exceptions from individual predicates are rescued and logged. A single broken predicate no longer crashes the entire `tools/list` response.
+- Development-mode warning with DidYouMean suggestion when a predicate method is not found on the server context (e.g., `@feture(:x)` warns "Did you mean @feature?").
+
+### Changed
+- `@requires` is now handled through the generic predicate path. The `tags[:requires]` key is removed; `@requires(:flag)` is stored only in `tags[:predicates]` like any other predicate.
+- `predicate_excluded?` replaces the three hardcoded `current_user.can?` filter lines in `compile_tagged_record`, `compile_tagged_union`, and `filter_call_signature`.
+- Configuration docs updated to describe the predicate protocol on server context objects.
+
+### Migration notes
+- Consumers using `OpenStruct` as server context continue to work — `@requires` falls back to `current_user.can?`. To use `@feature` or custom predicates, define the corresponding `?` methods on your server context.
+- If you read `tags[:requires]` from parsed tag hashes (unlikely outside the gem), switch to `tags[:predicates].find { |p| p[:name] == "requires" }`.
+
 ## [0.2.1] - 2026-05-13
 
 ### Fixed
