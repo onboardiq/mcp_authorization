@@ -7,9 +7,9 @@ Gem::Specification.new do |spec|
   spec.homepage    = "https://github.com/onboardiq/mcp_authorization"
   spec.summary     = "Rails engine for MCP tools with per-request schema discrimination"
   spec.description = "Add MCP tool serving to any Rails app. Write @rbs type annotations " \
-                     "with @requires(:flag) tags and the gem compiles per-user JSON Schema " \
-                     "automatically. Feature flags, permissions, and plan tiers all work " \
-                     "through a single can?(:symbol) predicate."
+                     "with predicate tags (@requires, @feature, or custom) and the gem " \
+                     "compiles per-user JSON Schema automatically — filtering fields by " \
+                     "permissions, feature flags, and plan tiers at request time."
   spec.license     = "MIT"
 
   spec.required_ruby_version = ">= 3.1"
