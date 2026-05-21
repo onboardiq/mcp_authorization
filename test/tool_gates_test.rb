@@ -158,12 +158,95 @@ class ToolGatesTest < Minitest::Test
   end
 
   # ---------------------------------------------------------------------------
-  # No server context — gates short-circuit to true (defensive)
+  # Nil server context — deny when gates declared, permit when none
   # ---------------------------------------------------------------------------
 
-  def test_no_server_context_with_gates_returns_true
+  def test_no_server_context_with_gates_returns_false
     tool = build_tool { gate :feature, :sms }
+    refute tool.permitted?(nil),
+      "permitted? with nil context but declared gates must deny — " \
+      "a nil context reaching this method is a programmer error, and " \
+      "silently exposing the tool would mask the bug"
+  end
+
+  def test_no_server_context_without_gates_returns_true
+    tool = build_tool {}
     assert tool.permitted?(nil),
-      "permitted? with nil context must not raise"
+      "permitted? with nil context AND no gates remains permissive " \
+      "(matches the legacy authorization-less behavior)"
+  end
+
+  # ---------------------------------------------------------------------------
+  # Class-instance state — gates do NOT inherit to subclasses, matching the
+  # existing behavior of authorization. Document this so callers don't
+  # expect base-class gates to apply to derived tools.
+  # ---------------------------------------------------------------------------
+
+  def test_gates_do_not_inherit_to_subclass
+    parent = build_tool { gate :feature, :sms }
+    child  = Class.new(parent)
+
+    ctx_no_sms = StubContext.new([], features: [])
+    refute parent.permitted?(ctx_no_sms),
+      "parent should deny without :sms feature"
+    assert child.permitted?(ctx_no_sms),
+      "child should NOT inherit parent's gate — documents class-instance scoping"
+  end
+
+  def test_authorization_does_not_inherit_to_subclass
+    parent = build_tool { authorization :admin }
+    child  = Class.new(parent)
+
+    ctx_no_perm = StubContext.new([])
+    refute parent.permitted?(ctx_no_perm),
+      "parent should deny without :admin permission"
+    assert child.permitted?(ctx_no_perm),
+      "child should NOT inherit parent's authorization — matches existing semantics"
+  end
+
+  # ---------------------------------------------------------------------------
+  # authorization → gate :requires migration: legacy DSL routes through the
+  # generic pipeline. Both must produce identical permitted? results.
+  # ---------------------------------------------------------------------------
+
+  def test_authorization_is_equivalent_to_gate_requires
+    legacy = build_tool { authorization :admin }
+    generic = build_tool { gate :requires, :admin }
+
+    [StubContext.new([:admin]), StubContext.new([])].each do |ctx|
+      assert_equal legacy.permitted?(ctx), generic.permitted?(ctx),
+        "authorization :admin and gate :requires, :admin must be equivalent for #{ctx.inspect}"
+    end
+  end
+
+  def test_authorization_still_writes_permission_attr_for_introspection
+    tool = build_tool { authorization :admin }
+    assert_equal :admin, tool._permission,
+      "_permission accessor remains so external code can introspect the legacy declaration"
+  end
+
+  # ---------------------------------------------------------------------------
+  # Tool.call (runtime enforcement) honors gates
+  # ---------------------------------------------------------------------------
+
+  def test_call_raises_not_authorized_when_gate_denies
+    # Build a tool wired to a minimal handler. We don't need the full
+    # handler contract — NotAuthorizedError is raised before reaching it.
+    handler = Class.new do
+      def initialize(server_context:); end
+      def description; "noop"; end
+      def call(**); { ok: true }; end
+    end
+    tool = Class.new(McpAuthorization::Tool) do
+      tool_name "denied_tool"
+      gate :feature, :nonexistent
+      # Skip dynamic_contract validation by stubbing the method
+      define_singleton_method(:_contract_handler) { handler }
+    end
+    ctx = StubContext.new([], features: []) # gate fails
+
+    assert_raises(McpAuthorization::Tool::NotAuthorizedError) do
+      tool.call(server_context: ctx)
+    end
   end
 end

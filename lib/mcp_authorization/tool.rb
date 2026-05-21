@@ -1,3 +1,5 @@
+require_relative "diagnostics"
+
 module McpAuthorization
   # Base class for MCP tools with schema-shaping authorization.
   #
@@ -44,10 +46,23 @@ module McpAuthorization
         McpAuthorization::ToolRegistry.register(subclass)
       end
 
-      # Declare the permission flag required to see this tool.
+      # Declare the RBAC permission flag required to see this tool.
+      #
+      # Convenience alias for +gate :requires, permission+. The generic
+      # gate pipeline handles dispatch — calling
+      # +server_context.requires?(permission)+ when defined, otherwise
+      # falling back to +current_user.can?(permission)+. This mirrors the
+      # field-level migration done in 0.3.0 (#12): +@requires+ also went
+      # through the generic predicate pipeline rather than carrying its
+      # own special-cased branch.
+      #
+      # +_permission+ remains exposed for introspection — the value is
+      # written there as before — but the actual gating goes through the
+      # gate list at +permitted?+ time, just like every other check.
       #: (Symbol) -> void
       def authorization(permission)
         @_permission = permission
+        gate :requires, permission
       end
 
       # Declare which MCP domains this tool belongs to.
@@ -127,15 +142,15 @@ module McpAuthorization
 
       # Check whether the current user is allowed to see this tool.
       #
-      # Combines two checks:
-      # 1. Legacy +authorization :perm+ — RBAC permission on +current_user+.
-      # 2. Generic +gate :predicate, :value+ — any predicate on the server
-      #    context (e.g. +feature?+, +requires?+). All gates must pass.
+      # Evaluates every declared gate against the server context. A tool
+      # is permitted only when every gate passes. With no gates declared,
+      # the tool is unconditionally visible.
       #
-      # Both must succeed. Returns false if any check fails.
+      # +authorization :perm+ contributes a +gate :requires, :perm+
+      # internally, so it goes through the same pipeline as every other
+      # predicate. There is one code path for gating, not two.
       #: (untyped) -> bool
       def permitted?(server_context)
-        return false if _permission && !server_context.current_user.can?(_permission)
         gates_pass?(server_context)
       end
 
@@ -227,19 +242,23 @@ module McpAuthorization
       private
 
       # Evaluate all declared +gate+ predicates against the server context.
-      # Returns true if every gate passes (or there are no gates).
+      # Returns true if every gate passes.
+      #
+      # No gates declared → permissive (tool is public). Gates declared
+      # but no server context → deny (a programmer error reaching this
+      # method should not silently expose the tool).
       #
       # Symmetric with field-level +RbsSchemaCompiler#predicate_excluded?+:
       # - Unknown predicate (server_context does not implement +{name}?+):
-      #   fail-open (gate passes, tool shown). A warning is logged in
-      #   development environments.
+      #   fail-open per-gate (gate passes, tool shown). A warning is
+      #   logged in development environments.
       # - +requires+ predicate without a +requires?+ method: backward-compat
       #   fallback to +current_user.can?(value)+.
-      # - Predicate raises an exception: fail-open and log.
+      # - Predicate raises an exception: fail-open per-gate and log.
       #: (untyped) -> bool
       def gates_pass?(server_context)
         return true if _gates.nil? || _gates.empty?
-        return true unless server_context
+        return false unless server_context # gates declared + nil context → deny
         _gates.all? { |gate| evaluate_gate(gate, server_context) }
       end
 
@@ -265,36 +284,12 @@ module McpAuthorization
       end
 
       # Emit a development-mode warning when a gate predicate method is not
-      # found on the server_context. Helps catch typos like
-      # +gate :feture, :sms+.
+      # found on the server context. Delegates to the shared diagnostic
+      # helper so the field-level (+@predicate+) and tool-level (+gate+)
+      # warning shapes stay in sync.
       #: (Symbol, untyped) -> void
       def warn_unknown_gate(name, server_context)
-        return unless defined?(Rails) && Rails.respond_to?(:env) && Rails.env.local?
-
-        available = server_context.class.public_instance_methods(true)
-          .select { |m| m.to_s.end_with?("?") }
-          .map { |m| m.to_s.chomp("?") }
-        best = available.min_by { |a| gate_levenshtein(a, name.to_s) }
-        hint = best && gate_levenshtein(best, name.to_s) <= 3 ? " Did you mean gate :#{best}?" : ""
-        Rails.logger&.warn("[McpAuthorization] Gate predicate '#{name}?' not found on #{server_context.class}.#{hint} Tool will be shown to all users.")
-      end
-
-      # Minimal Levenshtein distance for typo suggestions.
-      #: (String, String) -> Integer
-      def gate_levenshtein(a, b)
-        m, n = a.length, b.length
-        d = Array.new(m + 1) { |i| i }
-        (1..n).each do |j|
-          prev = d[0]
-          d[0] = j
-          (1..m).each do |i|
-            cost = a[i - 1] == b[j - 1] ? 0 : 1
-            temp = d[i]
-            d[i] = [d[i] + 1, d[i - 1] + 1, prev + cost].min
-            prev = temp
-          end
-        end
-        d[m]
+        McpAuthorization::Diagnostics.warn_unknown_predicate(name, server_context, site: :tool)
       end
 
       #: (**untyped) -> void

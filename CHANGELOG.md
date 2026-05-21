@@ -11,20 +11,21 @@ adheres to [Semantic Versioning](https://semver.org/).
 
   ```ruby
   class BulkSendSmsTool < McpAuthorization::Tool
-    authorization :communications  # RBAC (legacy, still supported)
+    authorization :communications  # RBAC permission (existing behavior preserved)
     gate :feature, :sms            # hide tool unless current_account.sms_enabled?
     gate :requires, :super_user    # extra check beyond authorization
   end
   ```
 
-- Levenshtein-based "Did you mean?" warning in development when a gate predicate is not found on the server context (e.g., `gate :feture, :sms` warns "Did you mean gate :feature?"). Mirrors the field-level diagnostic added in 0.3.0.
+- `McpAuthorization::Diagnostics` module — shared helper for the development-mode "Did you mean?" warning previously duplicated between field-level (`@predicate`) and tool-level (`gate`) sites. Single Levenshtein implementation, single warning phrasing per call site (`gate :feture, :sms` warns "Did you mean gate :feature?", `@feture(:sms)` warns "Did you mean @feature?").
 
 ### Changed
-- `Tool.permitted?` now combines two checks: the legacy `authorization` RBAC permission AND every declared `gate`. All checks must pass for the tool to be visible. Existing tools that use only `authorization` are unaffected — `gate` is opt-in.
+- **`authorization` migrated to the generic gate pipeline.** `authorization :perm` is now a convenience alias for `gate :requires, :perm`. The legacy dual-path in `Tool.permitted?` (one branch for `_permission`, another for gates) is gone; there is one pipeline now. Mirrors the field-level migration done in 0.3.0 (#12), where `@requires` was migrated through the same generic predicate pipeline rather than carrying its own special-cased branch. `_permission` remains exposed as before for introspection.
+- `permitted?(nil_context)` now denies when gates are declared (previously crashed). A nil context reaching `permitted?` is a programmer error; fail-closed avoids silently exposing the tool.
 
 ### Migration notes
-- No breaking changes. Tools that don't declare `gate` behave exactly as in 0.3.0.
-- `Tool.permitted?` is now never called with `_permission.nil?` short-circuiting to `true` *unconditionally* — instead, gates are also evaluated. A tool with no `authorization` and no `gate` calls remains permissive (returns true).
+- No breaking changes for end users. Tools that use `authorization :perm` continue to work exactly as before — the only difference is the internal pipeline.
+- If you read `tool_class._permission` for introspection, it still returns the declared symbol.
 - Existing field-level `@requires`/`@feature` semantics are unchanged.
 
 ## [0.3.0] - 2026-05-14

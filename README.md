@@ -299,18 +299,18 @@ end
 | Method | Purpose |
 |---|---|
 | `tool_name "name"` | MCP tool name |
-| `authorization :sym` | Tool-level RBAC visibility gate. Calls `current_user.can?(sym)`. Omit for public tools. |
+| `authorization :sym` | Tool-level RBAC visibility gate. Convenience alias for `gate :requires, :sym` — routes through the generic gate pipeline and falls back to `current_user.can?(:sym)` when the server context lacks a `requires?` method. Omit for public tools. |
 | `gate :predicate, :value` | Tool-level generic predicate gate. Calls `server_context.{predicate}?(value)`. Repeat for AND. Fail-open when the predicate method is missing (warning logged in dev). |
 | `tags "domain1", ...` | Domain(s) this tool appears under. Defaults to `["default"]`. |
 | `dynamic_contract HandlerClass` | Handler providing description, schemas, and execution |
 | `read_only!` | Annotation: tool only reads data |
 | `not_destructive!` | Annotation: tool does not destroy data |
-
-`authorization :perm` and `gate :predicate, :value` AND together: the tool is shown only when every check passes. This makes the tool-level surface symmetric with the field-level annotations (`@requires`, `@feature`, any custom predicate).
 | `destructive!` | Annotation: tool may destroy data |
 | `idempotent!` | Annotation: multiple calls have same effect |
 | `open_world!` | Annotation: tool may access external services |
 | `closed_world!` | Annotation: tool stays within the system |
+
+`authorization :perm` is just a convenience for `gate :requires, :perm` — internally there is one gate pipeline, not two. Multiple `gate` declarations AND together with `authorization`: the tool is shown only when every check passes. This makes tool-level gating symmetric with the field-level annotations (`@requires`, `@feature`, any custom predicate).
 
 Tools self-register when loaded. Put them anywhere under `tool_paths` (default: `app/mcp/`).
 
