@@ -10,12 +10,17 @@ module McpAuthorization
   #
   #   class Tools::ListOrders < McpAuthorization::Tool
   #     tool_name "list_orders"
-  #     authorization :view_orders
+  #     authorization :view_orders     # RBAC permission (legacy, still supported)
+  #     gate :feature, :order_tracking # generic predicate gate (any predicate name)
   #     tags "operator", "fulfillment"
   #     read_only!
   #
   #     dynamic_contract Handlers::ListOrders
   #   end
+  #
+  # Both +authorization+ and any number of +gate+ declarations contribute to
+  # visibility — the tool is shown only when every check passes. See
+  # +permitted?+ for the resolution order.
   #
   class Tool < MCP::Tool
     class NotAuthorizedError < StandardError; end
@@ -26,6 +31,9 @@ module McpAuthorization
 
       #: Array[String]?
       attr_reader :_tags
+
+      #: Array[Hash[Symbol, untyped]]?
+      attr_reader :_gates
 
       #: untyped
       attr_reader :_contract_handler
@@ -46,6 +54,30 @@ module McpAuthorization
       #: (*String | Array[String]) -> void
       def tags(*list)
         @_tags = list.flatten
+      end
+
+      # Declare a generic predicate gate that must pass for this tool to be
+      # visible. The gate calls +server_context.{predicate}?(value)+ at
+      # request time. If the predicate returns false, the tool is hidden
+      # from +tools/list+ and rejected from +tools/call+.
+      #
+      # Mirrors the field-level +@predicate(:value)+ system: any predicate
+      # name works, as long as the +server_context+ implements
+      # +{predicate}?(value)+.
+      #
+      #   class BulkSendSmsTool < McpAuthorization::Tool
+      #     authorization :communications  # RBAC (existing)
+      #     gate :feature, :sms            # hide tool unless account has SMS configured
+      #     gate :requires, :super_user    # extra RBAC check beyond authorization
+      #   end
+      #
+      # Multiple +gate+ calls AND together — every gate must pass.
+      #
+      # @param predicate_name [Symbol] Predicate name; resolved to +{predicate_name}?+ on the context.
+      # @param value [Symbol, String] Argument passed to the predicate method.
+      #: (Symbol, untyped) -> void
+      def gate(predicate_name, value)
+        (@_gates ||= []) << { name: predicate_name.to_sym, value: value }
       end
 
       # MCP annotation hint shorthands
@@ -94,10 +126,17 @@ module McpAuthorization
       end
 
       # Check whether the current user is allowed to see this tool.
+      #
+      # Combines two checks:
+      # 1. Legacy +authorization :perm+ — RBAC permission on +current_user+.
+      # 2. Generic +gate :predicate, :value+ — any predicate on the server
+      #    context (e.g. +feature?+, +requires?+). All gates must pass.
+      #
+      # Both must succeed. Returns false if any check fails.
       #: (untyped) -> bool
       def permitted?(server_context)
-        return true if _permission.nil?
-        server_context.current_user.can?(_permission)
+        return false if _permission && !server_context.current_user.can?(_permission)
+        gates_pass?(server_context)
       end
 
       # Build the full MCP tool definition hash for +tools/list+.
@@ -186,6 +225,77 @@ module McpAuthorization
       end
 
       private
+
+      # Evaluate all declared +gate+ predicates against the server context.
+      # Returns true if every gate passes (or there are no gates).
+      #
+      # Symmetric with field-level +RbsSchemaCompiler#predicate_excluded?+:
+      # - Unknown predicate (server_context does not implement +{name}?+):
+      #   fail-open (gate passes, tool shown). A warning is logged in
+      #   development environments.
+      # - +requires+ predicate without a +requires?+ method: backward-compat
+      #   fallback to +current_user.can?(value)+.
+      # - Predicate raises an exception: fail-open and log.
+      #: (untyped) -> bool
+      def gates_pass?(server_context)
+        return true if _gates.nil? || _gates.empty?
+        return true unless server_context
+        _gates.all? { |gate| evaluate_gate(gate, server_context) }
+      end
+
+      #: (Hash[Symbol, untyped], untyped) -> bool
+      def evaluate_gate(gate, server_context)
+        method = :"#{gate[:name]}?"
+        if server_context.respond_to?(method)
+          !!server_context.public_send(method, gate[:value])
+        elsif gate[:name] == :requires && server_context.respond_to?(:current_user)
+          # Backward compat: fall back to direct user permission check.
+          # Mirrors RbsSchemaCompiler#predicate_excluded? handling for the
+          # OpenStruct-style contexts that predate ServerContext.
+          !!server_context.current_user&.can?(gate[:value].to_sym)
+        else
+          warn_unknown_gate(gate[:name], server_context)
+          true # Fail-open: show the tool
+        end
+      rescue StandardError => e
+        if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+          Rails.logger.error("[McpAuthorization] tool gate #{gate[:name]}?(#{gate[:value]}) raised: #{e.message}")
+        end
+        true # Fail-open on error: show the tool
+      end
+
+      # Emit a development-mode warning when a gate predicate method is not
+      # found on the server_context. Helps catch typos like
+      # +gate :feture, :sms+.
+      #: (Symbol, untyped) -> void
+      def warn_unknown_gate(name, server_context)
+        return unless defined?(Rails) && Rails.respond_to?(:env) && Rails.env.local?
+
+        available = server_context.class.public_instance_methods(true)
+          .select { |m| m.to_s.end_with?("?") }
+          .map { |m| m.to_s.chomp("?") }
+        best = available.min_by { |a| gate_levenshtein(a, name.to_s) }
+        hint = best && gate_levenshtein(best, name.to_s) <= 3 ? " Did you mean gate :#{best}?" : ""
+        Rails.logger&.warn("[McpAuthorization] Gate predicate '#{name}?' not found on #{server_context.class}.#{hint} Tool will be shown to all users.")
+      end
+
+      # Minimal Levenshtein distance for typo suggestions.
+      #: (String, String) -> Integer
+      def gate_levenshtein(a, b)
+        m, n = a.length, b.length
+        d = Array.new(m + 1) { |i| i }
+        (1..n).each do |j|
+          prev = d[0]
+          d[0] = j
+          (1..m).each do |i|
+            cost = a[i - 1] == b[j - 1] ? 0 : 1
+            temp = d[i]
+            d[i] = [d[i] + 1, d[i - 1] + 1, prev + cost].min
+            prev = temp
+          end
+        end
+        d[m]
+      end
 
       #: (**untyped) -> void
       def merge_annotations(**new_hints)

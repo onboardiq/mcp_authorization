@@ -4,6 +4,29 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-05-21
+
+### Added
+- **Tool-level generic predicate gates.** `Tool` subclasses can now declare any number of `gate :predicate_name, :value` calls in addition to `authorization :perm`. The gate is evaluated at request time by calling `server_context.{predicate_name}?(value)`; if any gate returns false, the tool is hidden from `tools/list` and rejected from `tools/call`. This is the tool-level counterpart of the field-level `@predicate(:value)` system introduced in 0.3.0 — same semantics, same fail-open + error-isolation behavior, same backward-compat fallback for `gate :requires`.
+
+  ```ruby
+  class BulkSendSmsTool < McpAuthorization::Tool
+    authorization :communications  # RBAC (legacy, still supported)
+    gate :feature, :sms            # hide tool unless current_account.sms_enabled?
+    gate :requires, :super_user    # extra check beyond authorization
+  end
+  ```
+
+- Levenshtein-based "Did you mean?" warning in development when a gate predicate is not found on the server context (e.g., `gate :feture, :sms` warns "Did you mean gate :feature?"). Mirrors the field-level diagnostic added in 0.3.0.
+
+### Changed
+- `Tool.permitted?` now combines two checks: the legacy `authorization` RBAC permission AND every declared `gate`. All checks must pass for the tool to be visible. Existing tools that use only `authorization` are unaffected — `gate` is opt-in.
+
+### Migration notes
+- No breaking changes. Tools that don't declare `gate` behave exactly as in 0.3.0.
+- `Tool.permitted?` is now never called with `_permission.nil?` short-circuiting to `true` *unconditionally* — instead, gates are also evaluated. A tool with no `authorization` and no `gate` calls remains permissive (returns true).
+- Existing field-level `@requires`/`@feature` semantics are unchanged.
+
 ## [0.3.0] - 2026-05-14
 
 ### Added
