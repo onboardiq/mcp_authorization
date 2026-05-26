@@ -1,3 +1,5 @@
+require_relative "diagnostics"
+
 module McpAuthorization
   # Compiles RBS-style type annotations in Ruby source files into JSON Schema,
   # with per-request filtering based on +@requires+ permission tags.
@@ -602,35 +604,12 @@ module McpAuthorization
       end
 
       # Emit a development-mode warning when a predicate method is not
-      # found on the server_context. Helps catch typos like @feture(:x).
+      # found on the server_context. Delegates to the shared diagnostic
+      # helper so the field-level (+@predicate+) and tool-level (+gate+)
+      # warning shapes stay in sync.
       #: (String, untyped) -> void
       def warn_unknown_predicate(name, server_context)
-        return unless defined?(Rails) && Rails.respond_to?(:env) && Rails.env.local?
-
-        available = server_context.class.public_instance_methods(true)
-          .select { |m| m.to_s.end_with?("?") }
-          .map { |m| m.to_s.chomp("?") }
-        best = available.min_by { |a| levenshtein(a, name) }
-        hint = best && levenshtein(best, name) <= 3 ? " Did you mean @#{best}?" : ""
-        Rails.logger&.warn("[McpAuthorization] Predicate '#{name}?' not found on #{server_context.class}.#{hint} Field will be shown to all users.")
-      end
-
-      # Minimal Levenshtein distance for typo suggestions.
-      #: (String, String) -> Integer
-      def levenshtein(a, b)
-        m, n = a.length, b.length
-        d = Array.new(m + 1) { |i| i }
-        (1..n).each do |j|
-          prev = d[0]
-          d[0] = j
-          (1..m).each do |i|
-            cost = a[i - 1] == b[j - 1] ? 0 : 1
-            temp = d[i]
-            d[i] = [d[i] + 1, d[i - 1] + 1, prev + cost].min
-            prev = temp
-          end
-        end
-        d[m]
+        McpAuthorization::Diagnostics.warn_unknown_predicate(name, server_context, site: :field)
       end
 
       # Compile a record-style input type (+# @rbs type input = { ... }+)

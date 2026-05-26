@@ -10,11 +10,11 @@ The gem gives you three independent controls over what each user sees:
 
 | Layer | Mechanism | Effect |
 |---|---|---|
-| **Tool visibility** | `authorization :manage_workflows` on the tool class | Tool hidden entirely from users who lack the flag |
-| **Input fields** | `@requires(:backward_routing)` on a param in `#:` annotation | Field excluded from the input schema *and* stripped from inbound params at call time |
-| **Output variants** | `@requires(:backward_routing)` on a variant in `@rbs type output` | Variant excluded from the `oneOf` *and* fields projected out of the handler's return value before it crosses the wire |
+| **Tool visibility** | `authorization :manage_workflows` (RBAC) or `gate :feature, :sms` (any predicate) on the tool class | Tool hidden entirely from users who fail any check |
+| **Input fields** | `@requires(:backward_routing)` or `@feature(:sms)` on a param in `#:` annotation | Field excluded from the input schema *and* stripped from inbound params at call time |
+| **Output variants** | `@requires(:backward_routing)` or `@feature(:sms)` on a variant in `@rbs type output` | Variant excluded from the `oneOf` *and* fields projected out of the handler's return value before it crosses the wire |
 
-All three go through the same predicate: `current_user.can?(:symbol)`. The symbol can represent a permission, a feature flag, a plan tier, an A/B bucket -- whatever your app puts behind it.
+Tool-level `authorization :perm` is RBAC (calls `current_user.can?`). Tool-level `gate :predicate, :value` and the field-level annotations are generic — any predicate name works, as long as the server context implements `{predicate}?(value)`. See [Generic predicate tags](#generic-predicate-tags) below.
 
 ### Enforcement, not just shaping
 
@@ -287,7 +287,9 @@ Shared types define **shapes**. Authorization (`@requires`) stays on the handler
 ```ruby
 class MyTool < McpAuthorization::Tool
   tool_name "my_tool"
-  authorization :some_flag        # tool hidden when can?(:some_flag) is false
+  authorization :some_flag        # RBAC: hidden unless current_user.can?(:some_flag)
+  gate :feature, :order_tracking  # any predicate: hidden unless server_context.feature?(:order_tracking)
+  gate :tier, :enterprise         # multiple gates AND together
   tags "recruiting", "operations" # which domains this tool appears in
   read_only!                      # MCP annotation hints
   dynamic_contract MyService      # handler class
@@ -297,7 +299,8 @@ end
 | Method | Purpose |
 |---|---|
 | `tool_name "name"` | MCP tool name |
-| `authorization :sym` | Tool-level visibility gate. Omit for public tools. |
+| `authorization :sym` | Tool-level RBAC visibility gate. Convenience alias for `gate :requires, :sym` — routes through the generic gate pipeline and falls back to `current_user.can?(:sym)` when the server context lacks a `requires?` method. Omit for public tools. |
+| `gate :predicate, :value` | Tool-level generic predicate gate. Calls `server_context.{predicate}?(value)`. Repeat for AND. Fail-open when the predicate method is missing (warning logged in dev). |
 | `tags "domain1", ...` | Domain(s) this tool appears under. Defaults to `["default"]`. |
 | `dynamic_contract HandlerClass` | Handler providing description, schemas, and execution |
 | `read_only!` | Annotation: tool only reads data |
@@ -306,6 +309,8 @@ end
 | `idempotent!` | Annotation: multiple calls have same effect |
 | `open_world!` | Annotation: tool may access external services |
 | `closed_world!` | Annotation: tool stays within the system |
+
+`authorization :perm` is just a convenience for `gate :requires, :perm` — internally there is one gate pipeline, not two. Multiple `gate` declarations AND together with `authorization`: the tool is shown only when every check passes. This makes tool-level gating symmetric with the field-level annotations (`@requires`, `@feature`, any custom predicate).
 
 Tools self-register when loaded. Put them anywhere under `tool_paths` (default: `app/mcp/`).
 
@@ -454,6 +459,26 @@ def beta?(flag) = current_account.beta_enrolled?(flag.to_s)
 ```
 
 Multiple predicates on the same field are AND-ed — all must pass for the field to appear.
+
+### Tool-level gates
+
+The same predicate vocabulary is available at the **tool wrapper** level via `gate :predicate, :value`:
+
+```ruby
+class BulkSendSmsTool < McpAuthorization::Tool
+  authorization :communications  # RBAC permission
+  gate :feature, :sms            # hide tool unless account has SMS configured
+  gate :requires, :super_user    # extra RBAC check beyond authorization
+end
+```
+
+`gate` is the tool-level counterpart of `@predicate(:value)` on a field. Semantics:
+
+- Calls `server_context.{predicate_name}?(value)` at request time.
+- All gates AND together with `authorization`. The tool is shown only when every check passes.
+- Fail-open when the predicate method is missing on the server context (warning logged in development).
+- `gate :requires, :perm` falls back to `current_user.can?(:perm)` when the context lacks a `requires?` method (matching the field-level backward-compat path).
+- Exceptions raised by a predicate are rescued and logged — a broken predicate never crashes `tools/list`.
 
 **Niche:**
 

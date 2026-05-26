@@ -1,6 +1,7 @@
 require "mcp"
 require_relative "mcp_authorization/version"
 require_relative "mcp_authorization/configuration"
+require_relative "mcp_authorization/diagnostics"
 require_relative "mcp_authorization/dsl"
 require_relative "mcp_authorization/rbs_schema_compiler"
 require_relative "mcp_authorization/tool_registry"

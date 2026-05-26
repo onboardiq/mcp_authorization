@@ -4,10 +4,12 @@ module McpAuthorization
   class Tool
     attr_reader _permission: Symbol?
     attr_reader _tags: Array[String]?
+    attr_reader _gates: Array[Hash[Symbol, untyped]]?
     attr_reader _contract_handler: untyped
     def self.inherited: (Class) -> void
     def self.authorization: (Symbol) -> void
     def self.tags: (*String | Array[String]) -> void
+    def self.gate: (Symbol, untyped) -> void
     def self.read_only!: () -> void
     def self.destructive!: () -> void
     def self.not_destructive!: () -> void
@@ -22,6 +24,10 @@ module McpAuthorization
     def self.to_mcp_definition: (server_context: untyped) -> Hash[Symbol, untyped]?
     def self.call: (?server_context: untyped?, **untyped) -> untyped
     def self.materialize_for: (untyped) -> Class?
+    def self.symbolize_keys: (Hash[untyped, untyped]) -> Hash[Symbol, untyped]
+    def self.gates_pass?: (untyped) -> bool
+    def self.evaluate_gate: (Hash[Symbol, untyped], untyped) -> bool
+    def self.warn_unknown_gate: (Symbol, untyped) -> void
     def self.merge_annotations: (**untyped) -> void
     def self.handler_instance: (untyped) -> untyped
     def self.validate_contract!: (untyped) -> void

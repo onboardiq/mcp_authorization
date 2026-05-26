@@ -4,6 +4,30 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-05-21
+
+### Added
+- **Tool-level generic predicate gates.** `Tool` subclasses can now declare any number of `gate :predicate_name, :value` calls in addition to `authorization :perm`. The gate is evaluated at request time by calling `server_context.{predicate_name}?(value)`; if any gate returns false, the tool is hidden from `tools/list` and rejected from `tools/call`. This is the tool-level counterpart of the field-level `@predicate(:value)` system introduced in 0.3.0 — same semantics, same fail-open + error-isolation behavior, same backward-compat fallback for `gate :requires`.
+
+  ```ruby
+  class BulkSendSmsTool < McpAuthorization::Tool
+    authorization :communications  # RBAC permission (existing behavior preserved)
+    gate :feature, :sms            # hide tool unless current_account.sms_enabled?
+    gate :requires, :super_user    # extra check beyond authorization
+  end
+  ```
+
+- `McpAuthorization::Diagnostics` module — shared helper for the development-mode "Did you mean?" warning previously duplicated between field-level (`@predicate`) and tool-level (`gate`) sites. Single Levenshtein implementation, single warning phrasing per call site (`gate :feture, :sms` warns "Did you mean gate :feature?", `@feture(:sms)` warns "Did you mean @feature?").
+
+### Changed
+- **`authorization` migrated to the generic gate pipeline.** `authorization :perm` is now a convenience alias for `gate :requires, :perm`. The legacy dual-path in `Tool.permitted?` (one branch for `_permission`, another for gates) is gone; there is one pipeline now. Mirrors the field-level migration done in 0.3.0 (#12), where `@requires` was migrated through the same generic predicate pipeline rather than carrying its own special-cased branch. `_permission` remains exposed as before for introspection.
+- `permitted?(nil_context)` now denies when gates are declared (previously crashed). A nil context reaching `permitted?` is a programmer error; fail-closed avoids silently exposing the tool.
+
+### Migration notes
+- No breaking changes for end users. Tools that use `authorization :perm` continue to work exactly as before — the only difference is the internal pipeline.
+- If you read `tool_class._permission` for introspection, it still returns the declared symbol.
+- Existing field-level `@requires`/`@feature` semantics are unchanged.
+
 ## [0.3.0] - 2026-05-14
 
 ### Added

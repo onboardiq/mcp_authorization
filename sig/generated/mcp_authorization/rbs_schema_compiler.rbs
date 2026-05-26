@@ -4,14 +4,24 @@ module McpAuthorization
   class RbsSchemaCompiler
     def self.compile_input: (untyped, server_context: untyped) -> Hash[Symbol, untyped]
     def self.compile_output: (untyped, server_context: untyped) -> Hash[Symbol, untyped]?
+    def self.filter_input: (untyped, Hash[untyped, untyped], server_context: untyped) -> Hash[untyped, untyped]
+    def self.filter_output: (untyped, untyped, server_context: untyped) -> untyped
     def self.strict_sanitize: (Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
     def self.shared_type_cache: () -> Hash[String, untyped]
     def self.reset_cache!: () -> void
+    def self.compile_input_for_filter: (untyped, server_context: untyped) -> Hash[Symbol, untyped]
+    def self.compile_output_for_filter: (untyped, server_context: untyped) -> Hash[Symbol, untyped]?
+    def self.defs_from: (Hash[Symbol, untyped]?) -> Hash[String, Hash[Symbol, untyped]]
+    def self.resolve_ref: (Hash[Symbol, untyped]?, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]?
+    def self.project_against_schema: (untyped, Hash[Symbol, untyped]?, Hash[String, Hash[Symbol, untyped]]) -> untyped
+    def self.best_variant_for: (untyped, Array[Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]?
     def self.extract_tags: (String) -> [String, Hash[Symbol, untyped]]
     def self.parse_default_value: (String) -> untyped
     def self.apply_tags: (Hash[Symbol, untyped], Hash[Symbol, untyped], ?server_context: untyped?) -> Hash[Symbol, untyped]
     def self.cache_for: (untyped) -> Hash[Symbol, untyped]
     def self.build_cache: (untyped) -> Hash[Symbol, untyped]
+    def self.predicate_excluded?: (Hash[Symbol, untyped], untyped) -> bool
+    def self.warn_unknown_predicate: (String, untyped) -> void
     def self.compile_tagged_record: (String, Hash[String, Hash[Symbol, untyped]], untyped) -> Hash[Symbol, untyped]
     def self.compile_tagged_union: (String, Hash[String, Hash[Symbol, untyped]], untyped) -> Hash[Symbol, untyped]
     def self.filter_call_signature: (Array[Hash[Symbol, untyped]], Hash[String, Hash[Symbol, untyped]], untyped) -> Hash[Symbol, untyped]
