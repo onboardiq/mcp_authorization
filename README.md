@@ -380,9 +380,9 @@ The `@rbs type` comments compile to JSON Schema:
 # @rbs type result = {
 #   success: bool,
 #   message: String,
-#   count?: Integer
+#   ?count: Integer
 # }
-# (count? is optional -- excluded from "required")
+# (?count is optional -- excluded from "required")
 
 # Arrays
 # @rbs type items = Array[String]
