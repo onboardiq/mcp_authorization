@@ -7,7 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [0.5.0] - 2026-05-26
 
 ### Changed (BREAKING)
-- **Prefix optional marker (`?key:`) is now honored consistently across all three RBS parsers.** Previously, the three sibling parsers (`compile_tagged_record`, `parse_record_type`, `parse_call_params`) handled optional-field markers inconsistently: `parse_call_params` accepted only prefix `?key:`; `compile_tagged_record` accepted only suffix `key?:` and silently treated prefix `?key:` as required; `parse_record_type` recognized neither form and silently treated all fields as required. The README documents prefix as canonical (see "Prefix a param with `?` to mark it optional"), so handlers that followed the documentation got unexpectedly-required fields in their compiled schemas. **Effect on consumers:** any field declared with prefix `?key:` in a `# @rbs type input = { ... }` record, a nested/aliased record (`# @rbs type foo = { ?bar: ... }`), or an inline record inside a `#:` signature is now correctly marked optional in the JSON Schema (omitted from `required`). For a consuming monolith with ~616 such fields, the schema's `required` array shrinks accordingly and clients (e.g. LLMs producing tool calls) will no longer treat these fields as mandatory. Tools that relied on the prior (buggy) behavior to enforce a field's presence at the schema level must declare the field with no marker (`key:`) to stay required.
+- **Prefix optional marker (`?key:`) is now honored consistently across all three RBS parsers.**
+
+  The three sibling parsers handled optional-field markers inconsistently:
+  - `parse_call_params` — accepted only prefix `?key:`
+  - `compile_tagged_record` — accepted only suffix `key?:`, silently treated prefix `?key:` as required
+  - `parse_record_type` — recognized neither form, silently treated all fields as required
+
+  The README documents prefix as canonical ("Prefix a param with `?` to mark it optional"), so handlers that followed the docs got unexpectedly-required fields in their compiled schemas.
+
+  **Effect on consumers:** any field declared with prefix `?key:` in a `# @rbs type input = { ... }` record, a nested/aliased record (`# @rbs type foo = { ?bar: ... }`), or an inline record inside a `#:` signature is now correctly marked optional in the JSON Schema (omitted from `required`). For a consuming monolith with ~616 such fields, the schema's `required` array shrinks accordingly and clients (e.g. LLMs producing tool calls) will no longer treat these fields as mandatory.
+
+  **If you relied on the buggy behavior** (prefix marker silently making the field required), declare the field with no marker (`key:`) to keep it required, or enforce presence inside `#call`.
 
 ### Deprecated
 - **Suffix optional marker (`key?:`) is deprecated; will be removed in 0.6.0.** Suffix `key?:` continues to work in 0.5.0 (record types, call signatures, and nested aliased records) but now emits a single `Kernel#warn` per use with `category: :deprecated`. Silence with `Warning[:deprecated] = false` or `ruby -W:no-deprecated`. The warning embeds the handler's source-file path because the annotation is parsed as static text — the offending file is not on the Ruby call stack when the warning is emitted, so `uplevel:` cannot surface it.

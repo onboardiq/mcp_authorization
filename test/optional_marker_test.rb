@@ -44,6 +44,13 @@ class OptionalMarkerTest < Minitest::Test
     assert_raises(ArgumentError) { C.send(:parse_field_name, "   ") }
   end
 
+  def test_helper_nil_raises
+    # Defensive — the parser regex never captures nil in practice, but
+    # the helper guards against it explicitly so a misuse from a future
+    # caller fails loudly instead of producing a NoMethodError on String#strip.
+    assert_raises(ArgumentError) { C.send(:parse_field_name, nil) }
+  end
+
   def test_helper_bare_marker_raises
     assert_raises(ArgumentError) { C.send(:parse_field_name, "?") }
   end
