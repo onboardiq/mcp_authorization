@@ -445,14 +445,21 @@ module McpAuthorization
       # Users can silence via +Warning[:deprecated] = false+ or
       # +-W:no-deprecated+ — the standard Ruby mechanisms.
       #
-      # Raises +ArgumentError+ on malformed tokens:
-      # - empty / whitespace-only input
-      # - bare marker with no identifier (+"?"+)
-      # - identifier containing the marker in any position other than a
-      #   single prefix or single suffix (+"?key?"+, +"??key"+, +"key??"+)
+      # Raises +ArgumentError+ on malformed tokens. The helper produces
+      # three distinct error messages — categories grouped by which
+      # branch raises:
+      # - empty, whitespace-only, or nil input -> "empty field name"
+      # - double-marked optional after stripping (e.g. +"?key?"+) ->
+      #   "is double-marked optional"
+      # - any other shape that does not reduce to a bare +\w+
+      #   identifier (e.g. +"?"+, +"??key"+, +"key??"+, or tokens with
+      #   non-word characters) -> "invalid field name token"
       #
       # Whitespace adjacent to the marker is tolerated:
-      # +" ? key"+ -> ["key", true].
+      # +" ? key"+ -> ["key", true]. (Note: the three production call
+      # sites never produce such a token — their regexes don't permit
+      # internal whitespace — so this tolerance only matters if the
+      # helper is invoked directly.)
       #
       # @param raw [String] Token before the +:+ separator.
       # @param source_file [String, nil] Path included in the deprecation
