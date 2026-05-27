@@ -1,3 +1,4 @@
+require "rbs"
 require_relative "diagnostics"
 
 module McpAuthorization
@@ -1325,35 +1326,169 @@ module McpAuthorization
       #: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?) -> Hash[Symbol, untyped]
       def rbs_type_to_json_schema(rbs_type, type_map = {}, source_file: nil)
         stripped = rbs_type.strip
-        case stripped
+        return { type: "string" } if stripped.empty?
+
+        # Special case preserved for backward compat with the previous
+        # regex parser: "TrueClass | FalseClass" was recognized as a
+        # boolean shorthand. RBS would parse it as Union[ClassInstance,
+        # ClassInstance], which we'd otherwise turn into a oneOf.
+        return { type: "boolean" } if stripped == "TrueClass | FalseClass"
+
+        begin
+          ast = RBS::Parser.parse_type(stripped, require_eof: true)
+        rescue RBS::ParsingError
+          # Unparseable — fall back to type_map lookup or string.
+          return type_map[stripped] || { type: "string" }
+        end
+
+        visit_rbs_type(ast, type_map)
+      end
+
+      # AST visitor: convert an +RBS::Types::*+ node into JSON Schema.
+      #
+      # Replaces the prior regex case-statement parser with a delegation
+      # to the official rbs gem. Each node type maps onto a small JSON
+      # Schema fragment. Named types (+RBS::Types::Alias+, unknown
+      # +ClassInstance+) are looked up in +type_map+, preserving the
+      # gem's named-type indirection for shared and inline aliases.
+      #
+      # @param node [RBS::Types::t] AST node from +RBS::Parser.parse_type+.
+      # @param type_map [Hash] Resolved named-type definitions.
+      # @return [Hash] JSON Schema fragment.
+      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+      def visit_rbs_type(node, type_map)
+        case node
+        when RBS::Types::Bases::Bool
+          { type: "boolean" }
+        when RBS::Types::Bases::Any, RBS::Types::Bases::Void, RBS::Types::Bases::Nil
+          # untyped / void / nil → no constraint (LLM can pass anything)
+          { type: "string" }
+        when RBS::Types::Literal
+          visit_rbs_literal(node)
+        when RBS::Types::Optional
+          # Optional wraps a type; nullability is handled at field
+          # level (required-set), not in the JSON Schema type itself.
+          visit_rbs_type(node.type, type_map)
+        when RBS::Types::Union
+          visit_rbs_union(node, type_map)
+        when RBS::Types::Record
+          visit_rbs_record(node, type_map)
+        when RBS::Types::Tuple
+          # RBS tuples have heterogeneous element types; JSON Schema's
+          # closest analog is array with prefixItems, but for simplicity
+          # we project to a plain array.
+          { type: "array" }
+        when RBS::Types::ClassInstance
+          visit_rbs_class_instance(node, type_map)
+        when RBS::Types::Alias
+          name = node.name.to_s.sub(/\A::/, "")
+          type_map[name] || { type: "string" }
+        else
+          # Interface, Proc, Variable, ClassSingleton, Bases::Self/Class/Instance/Top/Bottom etc.
+          { type: "string" }
+        end
+      end
+
+      # Map +RBS::Types::ClassInstance+ to JSON Schema. Recognizes the
+      # Ruby primitives we care about (+String+, +Integer+, +Float+),
+      # generic +Array[T]+ / +Hash[K, V]+, and falls back to the
+      # +type_map+ for user-defined names.
+      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+      def visit_rbs_class_instance(node, type_map)
+        name = node.name.to_s.sub(/\A::/, "")
+        case name
         when "String"
           { type: "string" }
         when "Integer"
           { type: "integer" }
-        when "Float"
+        when "Float", "Numeric"
           { type: "number" }
-        when "bool", "TrueClass | FalseClass"
-          { type: "boolean" }
-        when "true"
+        when "TrueClass"
           { type: "boolean", const: true }
-        when "false"
+        when "FalseClass"
           { type: "boolean", const: false }
-        when /\AArray\[(.+)\]\z/
-          { type: "array", items: rbs_type_to_json_schema($1.to_s, type_map, source_file: source_file) }
-        when /\A(\w+)\?\z/
-          rbs_type_to_json_schema($1.to_s, type_map, source_file: source_file)
-        when /\A\{/
-          parse_record_type(stripped, type_map, source_file: source_file)
-        when /\|/
-          parts = split_at_depth_zero(stripped, "|").map(&:strip).reject(&:empty?)
-          if parts.all? { |p| p.start_with?('"') && p.end_with?('"') }
-            { type: "string", enum: parts.map { |p| p.delete('"') } }
-          else
-            { oneOf: parts.map { |p| rbs_type_to_json_schema(p, type_map, source_file: source_file) } }
-          end
+        when "Array"
+          inner = node.args.first
+          inner ? { type: "array", items: visit_rbs_type(inner, type_map) } : { type: "array" }
+        when "Hash"
+          # Hash[K, V] — JSON Schema can express V as additionalProperties.
+          val = node.args[1]
+          val ? { type: "object", additionalProperties: visit_rbs_type(val, type_map) } : { type: "object" }
+        when "Symbol"
+          { type: "string" }
+        when "NilClass"
+          { type: "string" }
         else
-          type_map[stripped] || { type: "string" }
+          type_map[name] || { type: "string" }
         end
+      end
+
+      # Map a +RBS::Types::Literal+ to a JSON Schema +const+ fragment.
+      # In a union of literals this becomes part of an +enum+; see
+      # +visit_rbs_union+ for that aggregation.
+      #: (untyped) -> Hash[Symbol, untyped]
+      def visit_rbs_literal(node)
+        case node.literal
+        when true  then { type: "boolean", const: true }
+        when false then { type: "boolean", const: false }
+        when String then { type: "string", const: node.literal }
+        when Symbol then { type: "string", const: node.literal.to_s }
+        when Integer then { type: "integer", const: node.literal }
+        else { type: "string", const: node.literal.to_s }
+        end
+      end
+
+      # Map +RBS::Types::Union+ to JSON Schema. A union of string
+      # literals becomes a +{type: "string", enum: [...]}+; any other
+      # mix becomes +{oneOf: [...]}+. This mirrors the prior regex
+      # parser's behavior so existing schemas don't drift.
+      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+      def visit_rbs_union(node, type_map)
+        types = node.types
+
+        # All string literals → enum.
+        if types.all? { |t| t.is_a?(RBS::Types::Literal) && t.literal.is_a?(String) }
+          return { type: "string", enum: types.map { |t| t.literal.to_s } }
+        end
+
+        # TrueClass | FalseClass → boolean. RBS doesn't have a single
+        # "boolean" base class, so this pattern is what users write.
+        if types.size == 2 &&
+           types.all? { |t| t.is_a?(RBS::Types::ClassInstance) } &&
+           types.map { |t| t.name.to_s.sub(/\A::/, "") }.sort == %w[FalseClass TrueClass]
+          return { type: "boolean" }
+        end
+
+        { oneOf: types.map { |t| visit_rbs_type(t, type_map) } }
+      end
+
+      # Map +RBS::Types::Record+ to a JSON Schema object. RBS handles
+      # +?key:+ optional markers natively — they land in
+      # +node.optional_fields+ rather than +node.fields+. No need for
+      # us to parse the marker manually.
+      #
+      # NOTE: this path is used when a record appears nested inside
+      # another type expression (e.g. +Array[{name: String}]+). Top-level
+      # records reached via +# @rbs type input = { ... }+ go through
+      # +compile_tagged_record+ instead so per-field tag extraction can
+      # happen before the type is parsed.
+      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+      def visit_rbs_record(node, type_map)
+        properties = {}
+        required = []
+
+        node.fields.each do |name, type|
+          key = name.to_s
+          properties[key.to_sym] = visit_rbs_type(type, type_map)
+          required << key
+        end
+        node.optional_fields.each do |name, type|
+          properties[name.to_s.to_sym] = visit_rbs_type(type, type_map)
+        end
+
+        schema = { type: "object", properties: properties } #: Hash[Symbol, untyped]
+        schema[:required] = required if required.any?
+        schema
       end
 
       # Look up a named type in the type map. Returns a bare +{type: "object"}+

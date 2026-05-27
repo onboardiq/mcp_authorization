@@ -48,6 +48,11 @@ module McpAuthorization
     def self.parse_record_type: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?) -> Hash[Symbol, untyped]
     def self.each_field_in_record: (String) { (String, String) -> void } -> void
     def self.rbs_type_to_json_schema: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?) -> Hash[Symbol, untyped]
+    def self.visit_rbs_type: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+    def self.visit_rbs_class_instance: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+    def self.visit_rbs_literal: (untyped) -> Hash[Symbol, untyped]
+    def self.visit_rbs_union: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+    def self.visit_rbs_record: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
     def self.resolve_type: (String, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
     def self.build_input_schema: (Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
     def self.find_source_file: (untyped) -> String?

@@ -9,24 +9,26 @@ adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - **Tag values containing balanced parens, commas, or pipes no longer break the parser.** ([#15](https://github.com/onboardiq/mcp_authorization/issues/15))
 
-  The historical regex parser used flat patterns (`[^)]*`, `[^,}]+`, bare `.split("|")`) to find delimiters. These patterns are not bracket-aware — a fundamental limitation of regular expressions (balanced delimiters are not a regular language). The symptom was silent miscompilation: any tag value that contained the delimiter character either truncated, fragmented the surrounding field, or — in the worst case — caused the entire type expression to fall through to the `{type: "string"}` fallback.
+  The historical regex parser used flat patterns (`[^)]*`, `[^,}]+`, bare `.split("|")`) to find delimiters. These patterns are not bracket-aware — a fundamental limitation of regular expressions (balanced delimiters are not a regular language). Symptom: silent miscompilation when any tag value contained the delimiter character.
 
   Four call sites were affected, all with the same root cause:
-  - `extract_tags` — `@desc(foo (bar))` truncated at the inner `)`, leaving the outer `@desc` un-extracted and the field type misparsed
-  - `compile_tagged_record` — `name: String @desc(yes, no), age: Integer` was fragmented at the comma inside `@desc`, dropping fields
-  - `parse_record_type` — same as above, for nested/aliased records
-  - `compile_tagged_union` / `rbs_type_to_json_schema` union split — `alpha @desc(a | b) | beta` split the union mid-tag-value
+  - `extract_tags` — `@desc(foo (bar))` truncated at the inner `)`
+  - `compile_tagged_record` — comma inside `@desc(...)` fragmented fields
+  - `parse_record_type` — same, for nested/aliased records
+  - union-splitting in `compile_tagged_union` and `rbs_type_to_json_schema` — pipe inside `@desc(...)` split the union mid-value
 
-  All four now go through new bracket-aware primitives that track `()`, `[]`, `{}` depth while scanning. Delimiters inside any balanced pair are skipped.
+  All four now go through bracket-aware primitives that track `()`, `[]`, `{}` depth while scanning.
 
-  **Concrete impact:** a field annotated `Integer @desc(The ID (NOT the question id)) @min(1)` that previously compiled to `{type: "string", minLength: 1}` (silently wrong type AND wrong constraint keyword) now correctly compiles to `{type: "integer", description: "The ID (NOT the question id)", minimum: 1}`.
+  **Concrete impact:** a field annotated `Integer @desc(The ID (NOT the question id)) @min(1)` previously compiled to `{type: "string", minLength: 1}` (wrong type AND wrong constraint keyword). Now compiles to `{type: "integer", description: "The ID (NOT the question id)", minimum: 1}`.
+
+### Changed
+- **Type-expression parsing now delegates to the official `rbs` gem.** `rbs_type_to_json_schema` previously dispatched via a regex case statement (`when "String"`, `when /\AArray\[(.+)\]\z/`, etc.). It now calls `RBS::Parser.parse_type` and walks the resulting AST through a small visitor (`visit_rbs_type`, `visit_rbs_class_instance`, `visit_rbs_union`, `visit_rbs_record`, `visit_rbs_literal`). This aligns the gem's runtime type interpretation with Steep's static interpretation — both now use the same parser, eliminating an entire class of silent divergence where the regex case statement misinterpreted types that Steep accepted.
+
+  Side benefit: types that previously fell through to the `{type: "string"}` fallback because the regex case statement didn't recognize them (e.g. `Hash[K, V]` becomes `{type: "object", additionalProperties: …}` instead of `{type: "string"}`) now have correct JSON Schema mappings. No external behavior change for the type expressions exercised by tools shipped before 0.5.1.
 
 ### Added
-- Internal helpers: `find_at_depth_zero`, `split_at_depth_zero`, `peel_trailing_tag`, `find_matching_open_paren`, `each_field_in_record`. Designed as primitives reusable by Phase 2 of the parser migration (see Notes).
-
-### Notes
-- **This is Phase 1 of a 3-phase parser migration.** Phase 2 (0.6.0) will delegate type-string parsing to the official `rbs` gem's `RBS::Parser.parse_type`, replacing the regex-based `rbs_type_to_json_schema` case statement with an AST visitor. Phase 3 (0.7.0) will delegate record and call-signature parsing similarly. The bracket-aware tag stripping introduced in this release is the foundation those phases reuse.
-- The architectural motivation: the current parser silently diverges from Steep (which uses the official `rbs` parser) when tag values confuse the regex. The migration aligns both systems on the same parser, eliminating an entire class of silent miscompilation.
+- Internal helpers: `find_at_depth_zero`, `split_at_depth_zero`, `peel_trailing_tag`, `find_matching_open_paren`, `each_field_in_record`. Bracket-aware primitives used by `extract_tags` and the record/union splitters.
+- **Runtime dependency on `rbs` (>= 3.0, < 4.0).** Previously transitive via Steep dev dependency; now explicit because the production code path uses it.
 
 ## [0.5.0] - 2026-05-26
 
