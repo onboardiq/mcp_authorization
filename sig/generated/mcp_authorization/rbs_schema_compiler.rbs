@@ -16,6 +16,10 @@ module McpAuthorization
     def self.project_against_schema: (untyped, Hash[Symbol, untyped]?, Hash[String, Hash[Symbol, untyped]]) -> untyped
     def self.best_variant_for: (untyped, Array[Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]?
     def self.extract_tags: (String) -> [String, Hash[Symbol, untyped]]
+    def self.find_at_depth_zero: (String, Array[String], ?start: Integer) -> Integer?
+    def self.split_at_depth_zero: (String, String) -> Array[String]
+    def self.peel_trailing_tag: (String) -> [String, String, String]?
+    def self.find_matching_open_paren: (String, Integer) -> Integer?
     def self.parse_field_name: (String, ?source_file: String?) -> [String, bool]
     def self.warn_deprecated_suffix_marker: (String, String?) -> void
     def self.parse_default_value: (String) -> untyped
@@ -42,7 +46,13 @@ module McpAuthorization
     def self.parse_call_params: (String, ?source_file: String?) -> Array[Hash[Symbol, untyped]]
     def self.aliases_to_schemas: (Hash[String, untyped], Hash[String, Hash[Symbol, untyped]]) -> Hash[String, Hash[Symbol, untyped]]
     def self.parse_record_type: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?) -> Hash[Symbol, untyped]
+    def self.each_field_in_record: (String) { (String, String) -> void } -> void
     def self.rbs_type_to_json_schema: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?) -> Hash[Symbol, untyped]
+    def self.visit_rbs_type: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+    def self.visit_rbs_class_instance: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+    def self.visit_rbs_literal: (untyped) -> Hash[Symbol, untyped]
+    def self.visit_rbs_union: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+    def self.visit_rbs_record: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
     def self.resolve_type: (String, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
     def self.build_input_schema: (Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
     def self.find_source_file: (untyped) -> String?

@@ -1,3 +1,4 @@
+require "rbs"
 require_relative "diagnostics"
 
 module McpAuthorization
@@ -374,9 +375,11 @@ module McpAuthorization
       def extract_tags(type_str)
         tags = {}
 
-        # Extract all @tag(...) annotations from right to left
-        while type_str =~ /\A(.+?)\s+@(\w+)\(([^)]*)\)\s*\z/
-          type_str, tag_name, tag_value = $1.to_s.strip, $2.to_s, $3.to_s
+        # Extract all @tag(...) annotations from right to left, using a
+        # bracket-aware peeler so tag values can contain balanced parens,
+        # commas, and pipes (e.g. +@desc(foo (bar). Required.)+).
+        while (peeled = peel_trailing_tag(type_str))
+          type_str, tag_name, tag_value = peeled
 
           case tag_name
           when "requires"
@@ -427,6 +430,158 @@ module McpAuthorization
         end
 
         [type_str, tags]
+      end
+
+      # ---------------------------------------------------------------
+      # Bracket-aware parsing primitives
+      #
+      # The historical regex parser used flat patterns like +[^)]*+,
+      # +[^,}]++, and bare +.split("|")+ to find delimiters in RBS-flavored
+      # annotations. Those patterns can't track nested brackets — a classic
+      # limitation of regular expressions (regex are finite automata with
+      # no counter; balanced delimiters are not a regular language). The
+      # symptom was silent miscompilation when tag values contained the
+      # delimiter characters (e.g. +@desc(foo (bar). baz)+ would terminate
+      # the +)+ scan at the inner +)+, leaving the outer +@desc(...)+
+      # un-extracted and the field's type misparsed).
+      #
+      # These helpers walk the string character-by-character tracking
+      # +()+, +[]+, +{}+ depth so delimiters inside any balanced bracket
+      # pair are skipped. Used by:
+      # - +extract_tags+              — locate +@tag(...)+ with balanced value
+      # - +compile_tagged_record+     — split fields on +,+ at depth 0
+      # - +parse_record_type+         — same
+      # - +compile_tagged_union+      — split variants on +|+ at depth 0
+      # - +rbs_type_to_json_schema+   — same
+      #
+      # See the 0.5.1 CHANGELOG for the bug-class history. This is the
+      # foundation that Phase 2 of the parser migration will reuse.
+      # ---------------------------------------------------------------
+
+      # Find the position of the first character in +delims+ that occurs
+      # at bracket depth 0, scanning left-to-right from +start+. Returns
+      # +nil+ if no such position exists.
+      #
+      # Tracks +()+, +[]+, +{}+ as balanced pairs. A delimiter inside any
+      # of these pairs is skipped.
+      #
+      # @example
+      #   find_at_depth_zero("a, b, (c, d), e", [","])  #=> 1
+      #   find_at_depth_zero("a, b, (c, d), e", [","], start: 2)  #=> 4
+      #   find_at_depth_zero("(no delim here)", [","])  #=> nil
+      #
+      #: (String, Array[String], ?start: Integer) -> Integer?
+      def find_at_depth_zero(str, delims, start: 0)
+        depth = 0
+        pos = start
+        while pos < str.length
+          ch = str[pos].to_s
+          return pos if depth.zero? && delims.include?(ch)
+          if "([{".include?(ch)
+            depth += 1
+          elsif ")]}".include?(ch)
+            depth -= 1
+          end
+          pos += 1
+        end
+        nil
+      end
+
+      # Split +str+ on every occurrence of +delim+ at bracket depth 0.
+      # Returns an array of substrings (NOT stripped, NOT filtered).
+      # Callers strip / reject empties as needed to match prior semantics.
+      #
+      # @example
+      #   split_at_depth_zero("a, b, (c, d), e", ",")
+      #   #=> ["a", " b", " (c, d)", " e"]
+      #
+      #: (String, String) -> Array[String]
+      def split_at_depth_zero(str, delim)
+        parts = []
+        start = 0
+        while (pos = find_at_depth_zero(str, [delim], start: start))
+          parts << str[start...pos].to_s
+          start = pos + 1
+        end
+        parts << str[start..].to_s
+        parts
+      end
+
+      # Peel the rightmost +@tag(...)+ off +type_str+ if one exists,
+      # respecting balanced parentheses inside the tag value.
+      #
+      # Returns +[remaining_type_str, tag_name, tag_value]+ on success, or
+      # +nil+ if no trailing tag is found. The remainder is right-stripped.
+      # The tag value is not stripped (preserves intentional whitespace
+      # in +@desc(...)+ for example).
+      #
+      # The +@+ must be preceded by whitespace or be at position 0, so
+      # +"@foo"+ in the middle of a type expression isn't mistaken for a
+      # tag (this matches the prior regex semantics with +\s+@+).
+      #
+      # @example
+      #   peel_trailing_tag("Integer @desc(a (b) c) @min(1)")
+      #   #=> ["Integer @desc(a (b) c)", "min", "1"]
+      #
+      #   peel_trailing_tag("Integer @desc(a (b) c)")
+      #   #=> ["Integer", "desc", "a (b) c"]
+      #
+      #: (String) -> [String, String, String]?
+      def peel_trailing_tag(type_str)
+        trimmed = type_str.rstrip
+        return nil unless trimmed.end_with?(")")
+
+        close_pos = trimmed.length - 1
+        open_pos = find_matching_open_paren(trimmed, close_pos)
+        return nil unless open_pos
+        return nil if open_pos.zero?
+
+        # Walk backward from open_pos to capture the tag name (\w+).
+        name_end = open_pos
+        name_start = name_end
+        while name_start > 0 && trimmed[name_start - 1].to_s.match?(/\w/)
+          name_start -= 1
+        end
+        return nil if name_start == name_end
+
+        # The character immediately before the name must be '@'.
+        at_pos = name_start - 1
+        return nil unless at_pos >= 0 && trimmed[at_pos] == "@"
+
+        # The '@' must be preceded by whitespace or be at the start, so we
+        # don't accidentally peel an '@' embedded in an identifier.
+        return nil unless at_pos.zero? || trimmed[at_pos - 1].to_s.match?(/\s/)
+
+        tag_name = trimmed[name_start...name_end].to_s
+        tag_value = trimmed[(open_pos + 1)...close_pos].to_s
+        remainder = trimmed[0...at_pos].to_s.rstrip
+
+        [remainder, tag_name, tag_value]
+      end
+
+      # Find the position of the +(+ that matches the +)+ at +close_pos+
+      # in +str+. Walks backward, counting nested parens. Returns +nil+
+      # if no balanced match exists.
+      #
+      # Only tracks +()+ — other brackets inside the tag value are
+      # transparent (e.g. +@example([1, 2])+ works because +[+ and +]+
+      # don't affect paren depth).
+      #
+      #: (String, Integer) -> Integer?
+      def find_matching_open_paren(str, close_pos)
+        depth = 1
+        i = close_pos - 1
+        while i >= 0
+          case str[i]
+          when ")"
+            depth += 1
+          when "("
+            depth -= 1
+            return i if depth.zero?
+          end
+          i -= 1
+        end
+        nil
       end
 
       # Parse a field-name token (the part before +:+ in a record entry or
@@ -715,11 +870,8 @@ module McpAuthorization
         required = []
         dependent_required = {}
 
-        inner = raw_body.strip.sub(/\A\{/, "").sub(/\}\z/, "").strip
-
-        inner.scan(/(\??\w+\??)\s*:\s*([^,}]+)/) do |match|
-          key, type_str = match[0].to_s, match[1].to_s
-          type_str, tags = extract_tags(type_str.strip)
+        each_field_in_record(raw_body) do |key, type_str|
+          type_str, tags = extract_tags(type_str)
 
           next if predicate_excluded?(tags, server_context)
 
@@ -755,7 +907,7 @@ module McpAuthorization
       # @return [Hash] JSON Schema — either a single schema or a +oneOf+ wrapper.
       #: (String, Hash[String, Hash[Symbol, untyped]], untyped) -> Hash[Symbol, untyped]
       def compile_tagged_union(raw_expr, type_map, server_context)
-        parts = raw_expr.split("|").map(&:strip).reject(&:empty?)
+        parts = split_at_depth_zero(raw_expr, "|").map(&:strip).reject(&:empty?)
 
         filtered = parts.filter_map do |part|
           part, tags = extract_tags(part)
@@ -1064,10 +1216,22 @@ module McpAuthorization
 
         params = []
         if annotation =~ /\((.+)\)\s*->/m
-          $1.to_s.split(",").each do |param|
+          # Bracket-aware split — flat `.split(",")` was breaking on commas
+          # inside @desc(...) and on generic types like Hash[Symbol, untyped]
+          # where the comma is part of the type-arg list.
+          split_at_depth_zero($1.to_s, ",").each do |param|
             param = param.strip
-            next unless param =~ /\A(\??\w+\??):\s*(.+)\z/
-            raw_key, type = $1.to_s, $2.to_s.strip
+            next if param.empty?
+
+            # Find the field-name/type separator at bracket depth 0 so
+            # `flag: Hash[Symbol, untyped]` doesn't get split on the `:`
+            # inside a nested record type.
+            colon = find_at_depth_zero(param, [":"])
+            next unless colon
+
+            raw_key = param[0...colon].to_s.strip
+            type = param[(colon + 1)..].to_s.strip
+            next if raw_key.empty? || type.empty?
 
             name, optional = parse_field_name(raw_key, source_file: source_file)
             next if name == "server_context"
@@ -1114,11 +1278,8 @@ module McpAuthorization
         properties = {}
         required = []
 
-        inner = body.strip.sub(/\A\{/, "").sub(/\}\z/, "").strip
-
-        inner.scan(/(\??\w+\??)\s*:\s*([^,}]+)/) do |match|
-          key, type_str = match[0].to_s, match[1].to_s
-          type_str, tags = extract_tags(type_str.strip)
+        each_field_in_record(body) do |key, type_str|
+          type_str, tags = extract_tags(type_str)
           clean_key, optional = parse_field_name(key, source_file: source_file)
 
           schema = rbs_type_to_json_schema(type_str, type_map, source_file: source_file)
@@ -1129,6 +1290,36 @@ module McpAuthorization
         schema = { type: "object", properties: properties } #: Hash[Symbol, untyped]
         schema[:required] = required if required.any?
         schema
+      end
+
+      # Iterate the fields of a record body, splitting on +,+ at bracket
+      # depth 0 (so commas inside +@desc(...)+ or inside nested records
+      # don't fragment a field). Yields +key, type_str+ already trimmed
+      # for each non-empty field. Outer braces are stripped before
+      # iteration.
+      #
+      # Pre-bracket-aware behavior used +inner.scan(/(\??\w+\??)\s*:\s*([^,}]+)/)+,
+      # which silently dropped any field whose type string contained a
+      # comma — or worse, split that field at the comma.
+      #
+      #: (String) { (String, String) -> void } -> void
+      def each_field_in_record(body)
+        inner = body.strip.sub(/\A\{/, "").sub(/\}\z/, "").strip
+        return if inner.empty?
+
+        split_at_depth_zero(inner, ",").each do |field|
+          field = field.strip
+          next if field.empty?
+
+          colon = find_at_depth_zero(field, [":"])
+          next unless colon
+
+          key = field[0...colon].to_s.strip
+          type_str = field[(colon + 1)..].to_s.strip
+          next if key.empty? || type_str.empty?
+
+          yield key, type_str
+        end
       end
 
       # Convert a single RBS type expression into its JSON Schema equivalent.
@@ -1147,35 +1338,169 @@ module McpAuthorization
       #: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?) -> Hash[Symbol, untyped]
       def rbs_type_to_json_schema(rbs_type, type_map = {}, source_file: nil)
         stripped = rbs_type.strip
-        case stripped
+        return { type: "string" } if stripped.empty?
+
+        # Special case preserved for backward compat with the previous
+        # regex parser: "TrueClass | FalseClass" was recognized as a
+        # boolean shorthand. RBS would parse it as Union[ClassInstance,
+        # ClassInstance], which we'd otherwise turn into a oneOf.
+        return { type: "boolean" } if stripped == "TrueClass | FalseClass"
+
+        begin
+          ast = RBS::Parser.parse_type(stripped, require_eof: true)
+        rescue RBS::ParsingError
+          # Unparseable — fall back to type_map lookup or string.
+          return type_map[stripped] || { type: "string" }
+        end
+
+        visit_rbs_type(ast, type_map)
+      end
+
+      # AST visitor: convert an +RBS::Types::*+ node into JSON Schema.
+      #
+      # Replaces the prior regex case-statement parser with a delegation
+      # to the official rbs gem. Each node type maps onto a small JSON
+      # Schema fragment. Named types (+RBS::Types::Alias+, unknown
+      # +ClassInstance+) are looked up in +type_map+, preserving the
+      # gem's named-type indirection for shared and inline aliases.
+      #
+      # @param node [RBS::Types::t] AST node from +RBS::Parser.parse_type+.
+      # @param type_map [Hash] Resolved named-type definitions.
+      # @return [Hash] JSON Schema fragment.
+      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+      def visit_rbs_type(node, type_map)
+        case node
+        when RBS::Types::Bases::Bool
+          { type: "boolean" }
+        when RBS::Types::Bases::Any, RBS::Types::Bases::Void, RBS::Types::Bases::Nil
+          # untyped / void / nil → no constraint (LLM can pass anything)
+          { type: "string" }
+        when RBS::Types::Literal
+          visit_rbs_literal(node)
+        when RBS::Types::Optional
+          # Optional wraps a type; nullability is handled at field
+          # level (required-set), not in the JSON Schema type itself.
+          visit_rbs_type(node.type, type_map)
+        when RBS::Types::Union
+          visit_rbs_union(node, type_map)
+        when RBS::Types::Record
+          visit_rbs_record(node, type_map)
+        when RBS::Types::Tuple
+          # RBS tuples have heterogeneous element types; JSON Schema's
+          # closest analog is array with prefixItems, but for simplicity
+          # we project to a plain array.
+          { type: "array" }
+        when RBS::Types::ClassInstance
+          visit_rbs_class_instance(node, type_map)
+        when RBS::Types::Alias
+          name = node.name.to_s.sub(/\A::/, "")
+          type_map[name] || { type: "string" }
+        else
+          # Interface, Proc, Variable, ClassSingleton, Bases::Self/Class/Instance/Top/Bottom etc.
+          { type: "string" }
+        end
+      end
+
+      # Map +RBS::Types::ClassInstance+ to JSON Schema. Recognizes the
+      # Ruby primitives we care about (+String+, +Integer+, +Float+),
+      # generic +Array[T]+ / +Hash[K, V]+, and falls back to the
+      # +type_map+ for user-defined names.
+      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+      def visit_rbs_class_instance(node, type_map)
+        name = node.name.to_s.sub(/\A::/, "")
+        case name
         when "String"
           { type: "string" }
         when "Integer"
           { type: "integer" }
-        when "Float"
+        when "Float", "Numeric"
           { type: "number" }
-        when "bool", "TrueClass | FalseClass"
-          { type: "boolean" }
-        when "true"
+        when "TrueClass"
           { type: "boolean", const: true }
-        when "false"
+        when "FalseClass"
           { type: "boolean", const: false }
-        when /\AArray\[(.+)\]\z/
-          { type: "array", items: rbs_type_to_json_schema($1.to_s, type_map, source_file: source_file) }
-        when /\A(\w+)\?\z/
-          rbs_type_to_json_schema($1.to_s, type_map, source_file: source_file)
-        when /\A\{/
-          parse_record_type(stripped, type_map, source_file: source_file)
-        when /\|/
-          parts = stripped.split("|").map(&:strip)
-          if parts.all? { |p| p.start_with?('"') && p.end_with?('"') }
-            { type: "string", enum: parts.map { |p| p.delete('"') } }
-          else
-            { oneOf: parts.map { |p| rbs_type_to_json_schema(p, type_map, source_file: source_file) } }
-          end
+        when "Array"
+          inner = node.args.first
+          inner ? { type: "array", items: visit_rbs_type(inner, type_map) } : { type: "array" }
+        when "Hash"
+          # Hash[K, V] — JSON Schema can express V as additionalProperties.
+          val = node.args[1]
+          val ? { type: "object", additionalProperties: visit_rbs_type(val, type_map) } : { type: "object" }
+        when "Symbol"
+          { type: "string" }
+        when "NilClass"
+          { type: "string" }
         else
-          type_map[stripped] || { type: "string" }
+          type_map[name] || { type: "string" }
         end
+      end
+
+      # Map a +RBS::Types::Literal+ to a JSON Schema +const+ fragment.
+      # In a union of literals this becomes part of an +enum+; see
+      # +visit_rbs_union+ for that aggregation.
+      #: (untyped) -> Hash[Symbol, untyped]
+      def visit_rbs_literal(node)
+        case node.literal
+        when true  then { type: "boolean", const: true }
+        when false then { type: "boolean", const: false }
+        when String then { type: "string", const: node.literal }
+        when Symbol then { type: "string", const: node.literal.to_s }
+        when Integer then { type: "integer", const: node.literal }
+        else { type: "string", const: node.literal.to_s }
+        end
+      end
+
+      # Map +RBS::Types::Union+ to JSON Schema. A union of string
+      # literals becomes a +{type: "string", enum: [...]}+; any other
+      # mix becomes +{oneOf: [...]}+. This mirrors the prior regex
+      # parser's behavior so existing schemas don't drift.
+      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+      def visit_rbs_union(node, type_map)
+        types = node.types
+
+        # All string literals → enum.
+        if types.all? { |t| t.is_a?(RBS::Types::Literal) && t.literal.is_a?(String) }
+          return { type: "string", enum: types.map { |t| t.literal.to_s } }
+        end
+
+        # TrueClass | FalseClass → boolean. RBS doesn't have a single
+        # "boolean" base class, so this pattern is what users write.
+        if types.size == 2 &&
+           types.all? { |t| t.is_a?(RBS::Types::ClassInstance) } &&
+           types.map { |t| t.name.to_s.sub(/\A::/, "") }.sort == %w[FalseClass TrueClass]
+          return { type: "boolean" }
+        end
+
+        { oneOf: types.map { |t| visit_rbs_type(t, type_map) } }
+      end
+
+      # Map +RBS::Types::Record+ to a JSON Schema object. RBS handles
+      # +?key:+ optional markers natively — they land in
+      # +node.optional_fields+ rather than +node.fields+. No need for
+      # us to parse the marker manually.
+      #
+      # NOTE: this path is used when a record appears nested inside
+      # another type expression (e.g. +Array[{name: String}]+). Top-level
+      # records reached via +# @rbs type input = { ... }+ go through
+      # +compile_tagged_record+ instead so per-field tag extraction can
+      # happen before the type is parsed.
+      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+      def visit_rbs_record(node, type_map)
+        properties = {}
+        required = []
+
+        node.fields.each do |name, type|
+          key = name.to_s
+          properties[key.to_sym] = visit_rbs_type(type, type_map)
+          required << key
+        end
+        node.optional_fields.each do |name, type|
+          properties[name.to_s.to_sym] = visit_rbs_type(type, type_map)
+        end
+
+        schema = { type: "object", properties: properties } #: Hash[Symbol, untyped]
+        schema[:required] = required if required.any?
+        schema
       end
 
       # Look up a named type in the type map. Returns a bare +{type: "object"}+
