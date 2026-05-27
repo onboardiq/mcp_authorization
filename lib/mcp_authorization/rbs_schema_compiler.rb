@@ -1216,10 +1216,22 @@ module McpAuthorization
 
         params = []
         if annotation =~ /\((.+)\)\s*->/m
-          $1.to_s.split(",").each do |param|
+          # Bracket-aware split — flat `.split(",")` was breaking on commas
+          # inside @desc(...) and on generic types like Hash[Symbol, untyped]
+          # where the comma is part of the type-arg list.
+          split_at_depth_zero($1.to_s, ",").each do |param|
             param = param.strip
-            next unless param =~ /\A(\??\w+\??):\s*(.+)\z/
-            raw_key, type = $1.to_s, $2.to_s.strip
+            next if param.empty?
+
+            # Find the field-name/type separator at bracket depth 0 so
+            # `flag: Hash[Symbol, untyped]` doesn't get split on the `:`
+            # inside a nested record type.
+            colon = find_at_depth_zero(param, [":"])
+            next unless colon
+
+            raw_key = param[0...colon].to_s.strip
+            type = param[(colon + 1)..].to_s.strip
+            next if raw_key.empty? || type.empty?
 
             name, optional = parse_field_name(raw_key, source_file: source_file)
             next if name == "server_context"

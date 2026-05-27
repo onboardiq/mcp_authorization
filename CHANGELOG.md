@@ -11,10 +11,11 @@ adheres to [Semantic Versioning](https://semver.org/).
 
   The historical regex parser used flat patterns (`[^)]*`, `[^,}]+`, bare `.split("|")`) to find delimiters. These patterns are not bracket-aware — a fundamental limitation of regular expressions (balanced delimiters are not a regular language). Symptom: silent miscompilation when any tag value contained the delimiter character.
 
-  Four call sites were affected, all with the same root cause:
+  Five call sites were affected, all with the same root cause:
   - `extract_tags` — `@desc(foo (bar))` truncated at the inner `)`
   - `compile_tagged_record` — comma inside `@desc(...)` fragmented fields
   - `parse_record_type` — same, for nested/aliased records
+  - `parse_call_params` — flat `.split(",")` mistook commas inside `@desc(...)` AND commas inside generic types (`Hash[Symbol, untyped]`) for parameter separators
   - union-splitting in `compile_tagged_union` and `rbs_type_to_json_schema` — pipe inside `@desc(...)` split the union mid-value
 
   All four now go through bracket-aware primitives that track `()`, `[]`, `{}` depth while scanning.

@@ -263,6 +263,55 @@ class BracketAwareParsingTest < Minitest::Test
   end
 
   # ----------------------------------------------------------------
+  # parse_call_params — the LATENT bug not caught in Phase 1
+  #
+  # `parse_call_params` used flat `.split(",")` to break up the
+  # parameter list. This silently miscompiled:
+  #   1. Method annotations with commas inside @desc tags
+  #   2. Parameters whose type uses generic syntax like Hash[K, V]
+  #      — the inner comma got treated as a parameter separator
+  # ----------------------------------------------------------------
+
+  def test_parse_call_params_with_comma_in_desc
+    src = <<~RUBY
+      #: (name: String @desc(Hello, world), age: Integer) -> untyped
+      def call(name:, age:); end
+    RUBY
+    params = C.send(:parse_call_params, src)
+    assert_equal 2, params.size, "expected 2 params, not split by inner @desc comma"
+    assert_equal %w[name age], params.map { |p| p[:name] }
+    name_param = params.find { |p| p[:name] == "name" }
+    assert_equal "Hello, world", name_param[:tags][:desc]
+  end
+
+  def test_parse_call_params_with_generic_hash_type
+    # `Hash[Symbol, untyped]` — flat split mistook the inner `,` for
+    # a param separator. Post-fix, the param is captured whole.
+    src = <<~RUBY
+      #: (config: Hash[Symbol, untyped], name: String) -> untyped
+      def call(config:, name:); end
+    RUBY
+    params = C.send(:parse_call_params, src)
+    assert_equal 2, params.size, "Hash[Symbol, untyped] must stay as one type"
+    config = params.find { |p| p[:name] == "config" }
+    refute_nil config, "config param must not be split mid-generic"
+    assert_equal "Hash[Symbol, untyped]", config[:type]
+  end
+
+  def test_parse_call_params_with_nested_record_type
+    # Param with inline record type — the inner colons/commas inside
+    # `{ ... }` must not be mistaken for param boundaries.
+    src = <<~RUBY
+      #: (user: { name: String, age: Integer }, status: String) -> untyped
+      def call(user:, status:); end
+    RUBY
+    params = C.send(:parse_call_params, src)
+    assert_equal 2, params.size
+    user = params.find { |p| p[:name] == "user" }
+    assert_equal "{ name: String, age: Integer }", user[:type]
+  end
+
+  # ----------------------------------------------------------------
   # Call site 4: union splitting with pipe inside @desc
   # ----------------------------------------------------------------
 
