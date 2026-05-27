@@ -1,5 +1,7 @@
 require_relative "test_helper"
 require "stringio"
+require "tmpdir"
+require "fileutils"
 
 # Cross-cutting tests for the prefix/suffix optional marker parsing fix
 # introduced in 0.5.0. Exercises all three sibling parsers
@@ -33,9 +35,8 @@ class OptionalMarkerTest < Minitest::Test
     # " ? key" must yield "key" (not " key") even though there's a
     # space between the marker and the identifier. Belongs in the helper,
     # not the call-site regex, so all three parsers get this for free.
-    silence_deprecation do
-      assert_equal ["key", true], C.send(:parse_field_name, " ? key")
-    end
+    # (Pure prefix — never triggers the suffix-deprecation path.)
+    assert_equal ["key", true], C.send(:parse_field_name, " ? key")
   end
 
   def test_helper_empty_raises
@@ -48,10 +49,10 @@ class OptionalMarkerTest < Minitest::Test
   end
 
   def test_helper_double_marked_raises
-    silence_deprecation do
-      err = assert_raises(ArgumentError) { C.send(:parse_field_name, "?key?") }
-      assert_match(/double-marked/, err.message)
-    end
+    # "?key?" raises via the `prefix && suffix` guard before the
+    # suffix-deprecation warn is reached — no Warning silencing needed.
+    err = assert_raises(ArgumentError) { C.send(:parse_field_name, "?key?") }
+    assert_match(/double-marked/, err.message)
   end
 
   def test_helper_double_prefix_raises
@@ -59,9 +60,10 @@ class OptionalMarkerTest < Minitest::Test
   end
 
   def test_helper_double_suffix_raises
-    silence_deprecation do
-      assert_raises(ArgumentError) { C.send(:parse_field_name, "key??") }
-    end
+    # "key??" raises via the \A\w+\z match guard (bare="key?" after
+    # stripping one trailing `?`) before the suffix-deprecation warn
+    # is reached — no Warning silencing needed.
+    assert_raises(ArgumentError) { C.send(:parse_field_name, "key??") }
   end
 
   # ----------------------------------------------------------------
@@ -345,11 +347,10 @@ class OptionalMarkerTest < Minitest::Test
   end
 
   def write_handler(template)
-    klass_name = "OptMarkerHandler_#{(self.class.send(:next_serial))}"
-    src = template.sub("<%= klass_name %>", klass_name).sub("<%= klass_name %>", klass_name)
+    klass_name = "OptMarkerHandler_#{self.class.send(:next_serial)}"
+    src = template.sub("<%= klass_name %>", klass_name)
 
     dir = File.join(Dir.tmpdir, "mcp_auth_optmarker_#{Process.pid}")
-    require "fileutils"
     FileUtils.mkdir_p(dir)
     path = File.join(dir, "#{klass_name.downcase}.rb")
     File.write(path, src)
@@ -359,8 +360,6 @@ class OptionalMarkerTest < Minitest::Test
     C.reset_cache!
     klass
   end
-
-  require "tmpdir"
 
   @@serial = 0
   def self.next_serial
