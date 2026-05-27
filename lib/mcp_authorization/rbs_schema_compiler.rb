@@ -58,7 +58,7 @@ module McpAuthorization
         cached = cache_for(handler_class)
 
         schema = if cached[:raw_input]&.dig(:kind) == :record
-          compile_tagged_record(cached[:raw_input][:body], cached[:type_map], server_context)
+          compile_tagged_record(cached[:raw_input][:body], cached[:type_map], server_context, source_file: cached[:source_file])
         else
           build_input_schema(
             filter_call_signature(cached[:call_params], cached[:type_map], server_context)
@@ -206,7 +206,7 @@ module McpAuthorization
         cached = cache_for(handler_class)
 
         schema = if cached[:raw_input]&.dig(:kind) == :record
-          compile_tagged_record(cached[:raw_input][:body], cached[:type_map], server_context)
+          compile_tagged_record(cached[:raw_input][:body], cached[:type_map], server_context, source_file: cached[:source_file])
         else
           build_input_schema(
             filter_call_signature(cached[:call_params], cached[:type_map], server_context)
@@ -429,6 +429,86 @@ module McpAuthorization
         [type_str, tags]
       end
 
+      # Parse a field-name token (the part before +:+ in a record entry or
+      # call signature parameter) into its clean name and an optional flag.
+      #
+      # Recognizes both forms:
+      # - Prefix (RBS canonical, per README):     +?name:+ -> ["name", true]
+      # - Suffix (legacy, deprecated for 0.6.0):  +name?:+ -> ["name", true]
+      # - Unmarked:                                +name:+  -> ["name", false]
+      #
+      # The suffix form was historically accepted by parts of this gem
+      # but is not standard RBS. Recognizing it consistently across all
+      # three parsers (this method's callers) preserves backward
+      # compatibility while a single +Kernel#warn+ with
+      # +category: :deprecated+ steers consumers toward the prefix form.
+      # Users can silence via +Warning[:deprecated] = false+ or
+      # +-W:no-deprecated+ — the standard Ruby mechanisms.
+      #
+      # Raises +ArgumentError+ on malformed tokens:
+      # - empty / whitespace-only input
+      # - bare marker with no identifier (+"?"+)
+      # - identifier containing the marker in any position other than a
+      #   single prefix or single suffix (+"?key?"+, +"??key"+, +"key??"+)
+      #
+      # Whitespace adjacent to the marker is tolerated:
+      # +" ? key"+ -> ["key", true].
+      #
+      # @param raw [String] Token before the +:+ separator.
+      # @param source_file [String, nil] Path included in the deprecation
+      #   warning so consumers can locate the offending annotation. The
+      #   handler source file is read as text during parsing, so it is
+      #   not on the Ruby call stack — embedding the path in the message
+      #   is the only way to make the warning actionable.
+      # @return [Array(String, Boolean)] +[clean_name, optional?]+.
+      #: (String, ?source_file: String?) -> [String, bool]
+      def parse_field_name(raw, source_file: nil)
+        raise ArgumentError, "empty field name" if raw.nil? || raw.to_s.strip.empty?
+
+        trimmed = raw.to_s.strip
+        prefix = trimmed.start_with?("?")
+        suffix = trimmed.end_with?("?")
+
+        bare = trimmed
+        bare = bare.sub(/\A\?/, "").strip if prefix
+        bare = bare.sub(/\?\z/, "").strip if suffix
+
+        unless bare.match?(/\A\w+\z/)
+          raise ArgumentError, "invalid field name token: #{raw.inspect}"
+        end
+
+        if prefix && suffix
+          raise ArgumentError,
+            "field #{bare.inspect} is double-marked optional (both ?prefix and suffix?); pick one"
+        end
+
+        warn_deprecated_suffix_marker(bare, source_file) if suffix
+
+        [bare, prefix || suffix]
+      end
+
+      # Emit a deprecation warning for the legacy suffix optional marker
+      # (+key?:+). Uses +Kernel#warn+ with +category: :deprecated+ so
+      # silencing follows the standard Ruby mechanism
+      # (+Warning[:deprecated] = false+, +-W:no-deprecated+) and not a
+      # gem-specific env var.
+      #
+      # The source file path is embedded in the message because the
+      # handler annotation is parsed as static text — the offending file
+      # is not on the Ruby call stack at warn time, so +uplevel:+ cannot
+      # surface it. Embedding the path keeps the warning actionable for
+      # consumers grepping for the field name.
+      #: (String, String?) -> void
+      def warn_deprecated_suffix_marker(name, source_file)
+        location = source_file ? " (in #{source_file})" : ""
+        Kernel.warn(
+          "[mcp_authorization] Deprecated optional marker syntax: " \
+          "`#{name}?:`#{location}. Use prefix form `?#{name}:` instead. " \
+          "The suffix form will be removed in 0.6.0.",
+          category: :deprecated
+        )
+      end
+
       # Coerce a default value string from an annotation into its Ruby type.
       # Handles booleans, nil/null, integers, floats, and bare strings.
       #
@@ -542,14 +622,14 @@ module McpAuthorization
 
         # Build type map: shared imports first, then handler's own types override
         imported = load_imports(content)
-        local = parse_type_aliases(content)
+        local = parse_type_aliases(content, source_file: source_file)
         type_map = imported.merge(local)
 
         {
           type_map: type_map,
           raw_input: find_raw_type_body(content, "input"),
           raw_output: find_raw_type_body(content, "output"),
-          call_params: parse_call_params(content),
+          call_params: parse_call_params(content, source_file: source_file),
           source_file: source_file
         }
       end
@@ -622,24 +702,23 @@ module McpAuthorization
       # @param type_map [Hash] Resolved type definitions for +$ref+ lookups.
       # @param server_context [Object] Per-request context.
       # @return [Hash] JSON Schema object with +properties+, +required+, etc.
-      #: (String, Hash[String, Hash[Symbol, untyped]], untyped) -> Hash[Symbol, untyped]
-      def compile_tagged_record(raw_body, type_map, server_context)
+      #: (String, Hash[String, Hash[Symbol, untyped]], untyped, ?source_file: String?) -> Hash[Symbol, untyped]
+      def compile_tagged_record(raw_body, type_map, server_context, source_file: nil)
         properties = {}
         required = []
         dependent_required = {}
 
         inner = raw_body.strip.sub(/\A\{/, "").sub(/\}\z/, "").strip
 
-        inner.scan(/(\w+\??)\s*:\s*([^,}]+)/) do |match|
+        inner.scan(/(\??\w+\??)\s*:\s*([^,}]+)/) do |match|
           key, type_str = match[0].to_s, match[1].to_s
           type_str, tags = extract_tags(type_str.strip)
 
           next if predicate_excluded?(tags, server_context)
 
-          optional = key.end_with?("?")
-          clean_key = key.delete_suffix("?")
+          clean_key, optional = parse_field_name(key, source_file: source_file)
 
-          schema = rbs_type_to_json_schema(type_str, type_map)
+          schema = rbs_type_to_json_schema(type_str, type_map, source_file: source_file)
           properties[clean_key.to_sym] = apply_tags(schema, tags, server_context: server_context)
           required << clean_key unless optional
 
@@ -828,7 +907,7 @@ module McpAuthorization
         resolved = {}
         aliases.each do |name, value|
           resolved[name] = if value.is_a?(String)
-            parse_record_type(value, resolved.merge(aliases_to_schemas(aliases, resolved)))
+            parse_record_type(value, resolved.merge(aliases_to_schemas(aliases, resolved)), source_file: path)
           else
             value
           end
@@ -912,8 +991,8 @@ module McpAuthorization
       #
       # @param content [String] Full source file contents.
       # @return [Hash{String => Hash}] Type name → resolved JSON Schema.
-      #: (String) -> Hash[String, Hash[Symbol, untyped]]
-      def parse_type_aliases(content)
+      #: (String, ?source_file: String?) -> Hash[String, Hash[Symbol, untyped]]
+      def parse_type_aliases(content, source_file: nil)
         return {} if content.empty?
 
         aliases = {}
@@ -940,7 +1019,7 @@ module McpAuthorization
         resolved = {}
         aliases.each do |name, value|
           resolved[name] = if value.is_a?(String)
-            parse_record_type(value, resolved.merge(aliases_to_schemas(aliases, resolved)))
+            parse_record_type(value, resolved.merge(aliases_to_schemas(aliases, resolved)), source_file: source_file)
           else
             value
           end
@@ -961,8 +1040,8 @@ module McpAuthorization
       #
       # @param content [String] Full source file contents.
       # @return [Array<Hash>] Parameter descriptors.
-      #: (String) -> Array[Hash[Symbol, untyped]]
-      def parse_call_params(content)
+      #: (String, ?source_file: String?) -> Array[Hash[Symbol, untyped]]
+      def parse_call_params(content, source_file: nil)
         return [] if content.empty?
 
         lines = content.lines
@@ -980,8 +1059,10 @@ module McpAuthorization
         if annotation =~ /\((.+)\)\s*->/m
           $1.to_s.split(",").each do |param|
             param = param.strip
-            next unless param =~ /\A(\?)?([\w]+):\s*(.+)\z/
-            opt, name, type = $1, $2.to_s, $3.to_s.strip
+            next unless param =~ /\A(\??\w+\??):\s*(.+)\z/
+            raw_key, type = $1.to_s, $2.to_s.strip
+
+            name, optional = parse_field_name(raw_key, source_file: source_file)
             next if name == "server_context"
 
             type, tags = extract_tags(type)
@@ -989,7 +1070,7 @@ module McpAuthorization
             params << {
               name: name,
               type: type,
-              required: opt.nil? && !type.end_with?("?"),
+              required: !optional && !type.end_with?("?"),
               tags: tags
             }
           end
@@ -1021,20 +1102,19 @@ module McpAuthorization
       # @param body [String] Record body including surrounding braces.
       # @param type_map [Hash] Resolved types for reference lookups.
       # @return [Hash] JSON Schema object with +properties+ and +required+.
-      #: (String, ?Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
-      def parse_record_type(body, type_map = {})
+      #: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?) -> Hash[Symbol, untyped]
+      def parse_record_type(body, type_map = {}, source_file: nil)
         properties = {}
         required = []
 
         inner = body.strip.sub(/\A\{/, "").sub(/\}\z/, "").strip
 
-        inner.scan(/(\w+):\s*([^,}]+)/) do |match|
+        inner.scan(/(\??\w+\??)\s*:\s*([^,}]+)/) do |match|
           key, type_str = match[0].to_s, match[1].to_s
           type_str, tags = extract_tags(type_str.strip)
-          optional = key.end_with?("?")
-          clean_key = key.delete_suffix("?")
+          clean_key, optional = parse_field_name(key, source_file: source_file)
 
-          schema = rbs_type_to_json_schema(type_str, type_map)
+          schema = rbs_type_to_json_schema(type_str, type_map, source_file: source_file)
           properties[clean_key.to_sym] = apply_tags(schema, tags)
           required << clean_key unless optional
         end
@@ -1057,8 +1137,8 @@ module McpAuthorization
       # @param rbs_type [String] RBS type expression.
       # @param type_map [Hash] Resolved type definitions for named type lookups.
       # @return [Hash] JSON Schema hash.
-      #: (String, ?Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
-      def rbs_type_to_json_schema(rbs_type, type_map = {})
+      #: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?) -> Hash[Symbol, untyped]
+      def rbs_type_to_json_schema(rbs_type, type_map = {}, source_file: nil)
         stripped = rbs_type.strip
         case stripped
         when "String"
@@ -1074,17 +1154,17 @@ module McpAuthorization
         when "false"
           { type: "boolean", const: false }
         when /\AArray\[(.+)\]\z/
-          { type: "array", items: rbs_type_to_json_schema($1.to_s, type_map) }
+          { type: "array", items: rbs_type_to_json_schema($1.to_s, type_map, source_file: source_file) }
         when /\A(\w+)\?\z/
-          rbs_type_to_json_schema($1.to_s, type_map)
+          rbs_type_to_json_schema($1.to_s, type_map, source_file: source_file)
         when /\A\{/
-          parse_record_type(stripped, type_map)
+          parse_record_type(stripped, type_map, source_file: source_file)
         when /\|/
           parts = stripped.split("|").map(&:strip)
           if parts.all? { |p| p.start_with?('"') && p.end_with?('"') }
             { type: "string", enum: parts.map { |p| p.delete('"') } }
           else
-            { oneOf: parts.map { |p| rbs_type_to_json_schema(p, type_map) } }
+            { oneOf: parts.map { |p| rbs_type_to_json_schema(p, type_map, source_file: source_file) } }
           end
         else
           type_map[stripped] || { type: "string" }
