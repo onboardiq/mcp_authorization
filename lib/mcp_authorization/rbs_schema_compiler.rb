@@ -1,4 +1,26 @@
-require "rbs"
+# Narrow require set: we use only RBS::Parser.parse_type and a handful of
+# RBS::Types::* AST classes. Avoid `require "rbs"`, which pulls in ~144
+# files (CLI, environment loader, definition builder, prototype generators,
+# stdlib type signatures, ...) we never touch — ~15 MB RSS vs ~1.2 MB for
+# the subset below. Load order matters: location_aux uses the C-defined
+# RBS::Location, and rbs_extension assumes RBS::AST::* namespaces exist.
+require "rbs/version"
+require "rbs/errors"
+require "rbs/buffer"
+require "rbs/namespace"
+require "rbs/type_name"
+require "rbs/types"
+require "rbs/method_type"
+require "rbs/ast/type_param"
+require "rbs/ast/directives"
+require "rbs/ast/declarations"
+require "rbs/ast/members"
+require "rbs/ast/annotation"
+require "rbs/ast/comment"
+require "rbs_extension"
+require "rbs/location_aux"
+require "rbs/parser_aux"
+
 require_relative "diagnostics"
 
 module McpAuthorization
