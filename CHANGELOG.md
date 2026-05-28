@@ -10,7 +10,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 - **Narrowed the `rbs` require set.** `require "rbs"` pulled in ~144 files (CLI, environment loader, definition builder, prototype generators, stdlib type signatures, validator, resolver, ...) — none of which this gem touches. Replaced with a 16-file subset covering only `RBS::Parser.parse_type` and the `RBS::Types::*` AST classes the schema visitor actually visits. Measured against this gem's load path: ~1.2 MB RSS vs ~15 MB, 18 files loaded vs 144. No behavior change — same parser, same AST.
 - **Loosened the `rbs` version constraint** from `>= 3.0, < 4.0` to `>= 3.0`. The upper bound locked consumers out of `rbs 4.x` even though `RBS::Parser.parse_type` is part of rbs's stable surface. Consumers who already depend on `rbs 4` for their own Steep / type-check toolchain can now use this gem without a downgrade. If a future rbs major actually breaks our parser-API usage, we'll add the upper bound back at that point — not preemptively.
 
-
+## [0.5.1] - 2026-05-27
 
 ### Fixed
 - **Tag values containing balanced parens, commas, or pipes no longer break the parser.** ([#15](https://github.com/onboardiq/mcp_authorization/issues/15))
