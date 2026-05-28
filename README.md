@@ -4,6 +4,8 @@ Rails engine for serving MCP tools with per-request schema discrimination compil
 
 Add it to your Gemfile and your Rails app speaks [MCP](https://modelcontextprotocol.io). Write `@rbs type` comments in plain Ruby service classes, tag fields and variants with `@requires(:flag)`, and the gem compiles tailored JSON Schema per request. The type definitions are the authorization policy.
 
+> Looking for task-oriented "how do I X?" recipes rather than reference? See the **[Cookbook](COOKBOOK.md)**.
+
 ## Three layers of authorization
 
 The gem gives you three independent controls over what each user sees:
