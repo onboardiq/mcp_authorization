@@ -25,3 +25,21 @@ jobs:
 
       - name: Run tests
         run: bundle exec rake test
+
+  sentinel:
+    runs-on: ubuntu-latest
+    name: sentinel (rbs sigs current)
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      # Fails if the committed sig/generated/*.rbs drift from the inline
+      # #: annotations — i.e. someone added/changed a method without
+      # running `bundle exec sentinel init`.
+      - name: Verify generated RBS signatures are current
+        run: bundle exec sentinel check

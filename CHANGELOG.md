@@ -16,7 +16,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 - **Narrowed `rbs` require set now loads under `rbs` 4.x.** The 0.5.2 narrowing (16-file subset instead of `require "rbs"`) was validated against `rbs` 3.x but raised `NameError: uninitialized constant RBS::AST::Ruby` on a fresh install resolving `rbs` 4.x — the same 4.x that 0.5.2's loosened `>= 3.0` constraint explicitly allows. `rbs` 4.x's C extension references the new `RBS::AST::Ruby::*` namespace and its `parser_aux` references `Pathname` at load time. The require block now loads `pathname` and the `rbs/ast/ruby/*` files when present (guarded by `rescue LoadError` so `rbs` 3.x, which lacks them, is unaffected). Verified against `rbs` 3.10 and 4.0.
 
 ### Added
-- **CI workflow** (`.github/workflows/ci.yml`) running `bundle exec rake test` across Ruby 3.1–3.4 on push and pull request.
+- **CI workflow** (`.github/workflows/ci.yml`) running `bundle exec rake test` across Ruby 3.1–3.4 on push and pull request, plus a `sentinel check` job that fails if the committed `sig/generated/*.rbs` drift from the inline `#:` annotations. `rbs-sentinel` is now pinned as a development dependency so the signature formatting CI checks against is reproducible.
 
 ## [0.5.2] - 2026-05-28
 
