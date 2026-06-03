@@ -4,7 +4,7 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.3] - 2026-06-03
 
 ### Fixed
 - **`#` comments inside an RBS record type no longer break schema compilation.** ([#20](https://github.com/onboardiq/mcp_authorization/issues/20))
