@@ -46,6 +46,7 @@ module McpAuthorization
     def self.parse_call_params: (String, ?source_file: String?) -> Array[Hash[Symbol, untyped]]
     def self.aliases_to_schemas: (Hash[String, untyped], Hash[String, Hash[Symbol, untyped]]) -> Hash[String, Hash[Symbol, untyped]]
     def self.parse_record_type: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?) -> Hash[Symbol, untyped]
+    def self.strip_rbs_comment: (String) -> String
     def self.each_field_in_record: (String) { (String, String) -> void } -> void
     def self.rbs_type_to_json_schema: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?) -> Hash[Symbol, untyped]
     def self.visit_rbs_type: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
