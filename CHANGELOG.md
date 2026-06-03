@@ -4,6 +4,15 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **`#` comments inside an RBS record type no longer break schema compilation.** ([#20](https://github.com/onboardiq/mcp_authorization/issues/20))
+
+  A comment line inside a record body — whether in an inline `# @rbs type` annotation or an imported `sig/shared/*.rbs` alias — raised `ArgumentError: invalid field name token`. The line-based readers (`find_raw_type_body`, `parse_type_aliases`, `parse_rbs_file`) concatenate record-body lines without a newline separator, so a comment folded into the next field name (`"# a note describing the fields belowid"`). Comments are valid anywhere in RBS — the official lexer discards `#`-to-end-of-line everywhere — so the readers now strip line comments before splitting fields, via a new `strip_rbs_comment` helper that leaves `#` inside string literals and bracketed annotation values (e.g. `@desc(...)`) untouched.
+
+  **Impact:** because `tools/list` maps `to_mcp_definition` over every tool in a domain, a single tool with an in-record comment took down discovery for the entire domain — and the offending comment could live far away in a shared `.rbs` alias that several tools import.
+
 ## [0.5.2] - 2026-05-28
 
 ### Changed
