@@ -13,6 +13,11 @@ adheres to [Semantic Versioning](https://semver.org/).
 
   **Impact:** because `tools/list` maps `to_mcp_definition` over every tool in a domain, a single tool with an in-record comment took down discovery for the entire domain — and the offending comment could live far away in a shared `.rbs` alias that several tools import.
 
+- **Narrowed `rbs` require set now loads under `rbs` 4.x.** The 0.5.2 narrowing (16-file subset instead of `require "rbs"`) was validated against `rbs` 3.x but raised `NameError: uninitialized constant RBS::AST::Ruby` on a fresh install resolving `rbs` 4.x — the same 4.x that 0.5.2's loosened `>= 3.0` constraint explicitly allows. `rbs` 4.x's C extension references the new `RBS::AST::Ruby::*` namespace and its `parser_aux` references `Pathname` at load time. The require block now loads `pathname` and the `rbs/ast/ruby/*` files when present (guarded by `rescue LoadError` so `rbs` 3.x, which lacks them, is unaffected). Verified against `rbs` 3.10 and 4.0.
+
+### Added
+- **CI workflow** (`.github/workflows/ci.yml`) running `bundle exec rake test` across Ruby 3.1–3.4 on push and pull request.
+
 ## [0.5.2] - 2026-05-28
 
 ### Changed

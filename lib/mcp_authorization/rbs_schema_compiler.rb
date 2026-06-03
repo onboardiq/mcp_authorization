@@ -4,6 +4,7 @@
 # stdlib type signatures, ...) we never touch — ~15 MB RSS vs ~1.2 MB for
 # the subset below. Load order matters: location_aux uses the C-defined
 # RBS::Location, and rbs_extension assumes RBS::AST::* namespaces exist.
+require "pathname" # rbs 4.x's parser_aux references Pathname at load time
 require "rbs/version"
 require "rbs/errors"
 require "rbs/buffer"
@@ -17,6 +18,23 @@ require "rbs/ast/declarations"
 require "rbs/ast/members"
 require "rbs/ast/annotation"
 require "rbs/ast/comment"
+# rbs 4.x's C extension (rbs_extension) references the RBS::AST::Ruby::*
+# namespace, which did not exist on rbs 3.x. Require those files when the
+# installed rbs ships them so the narrow load path stays correct across
+# the gemspec's supported range (rbs >= 3.0); ignore on versions that
+# predate the namespace, where rbs_extension does not need it.
+%w[
+  rbs/ast/ruby/helpers/constant_helper
+  rbs/ast/ruby/helpers/location_helper
+  rbs/ast/ruby/annotations
+  rbs/ast/ruby/comment_block
+  rbs/ast/ruby/declarations
+  rbs/ast/ruby/members
+].each do |feature|
+  require feature
+rescue LoadError
+  # rbs < 4: file absent and rbs_extension does not reference it.
+end
 require "rbs_extension"
 require "rbs/location_aux"
 require "rbs/parser_aux"
