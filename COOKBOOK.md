@@ -2,7 +2,7 @@
 
 Task-oriented recipes. The [README](README.md) is the reference — this is "I want to do X, what do I write?"
 
-Every recipe is a complete, copy-pasteable snippet. They build on the [handler-example](../app/handler-example) app: a recruiting-workflow server with three roles — **viewer** (`view_workflows`), **operator** (`manage_workflows`), and **manager** (`manage_workflows` + `backward_routing`).
+Every recipe is a complete, copy-pasteable snippet. They build on the handler-example app (a recruiting-workflow server, not yet published as a standalone repo) with three roles — **viewer** (`view_workflows`), **operator** (`manage_workflows`), and **manager** (`manage_workflows` + `backward_routing`).
 
 The mental model, in one line: **your RBS type annotations are the authorization policy.** You don't reject requests — you compile a different schema per user, and the gem enforces it on the way in and on the way out.
 
@@ -78,7 +78,7 @@ McpAuthorization.configure do |config|
   config.server_name = "my-app"
   config.context_builder = ->(request) {
     user = User.authenticate(request.headers["Authorization"])
-    OpenStruct.new(current_user: user)  # must respond to .current_user.can?(:sym)
+    OpenStruct.new(current_user: user)  # works for a sketch; prefer a real context class — see recipe 14
   }
 end
 ```
@@ -549,7 +549,7 @@ module Workflows
     def call(query: nil, stage: nil, limit: 20)
       scope = Applicant.all
       # Relation methods parameterize the value — the LLM's text never touches raw SQL.
-      scope = scope.where("name ILIKE ?", "%#{query}%") if query.present?
+      scope = scope.where("name ILIKE ?", "%#{query}%") if query.present?  # ILIKE is PostgreSQL-only; use LIKE on MySQL/SQLite (case-sensitivity varies by collation)
       scope = scope.where(stage: stage) if stage.present?
 
       total   = scope.count
@@ -701,5 +701,5 @@ end
 ## Where to go next
 
 - **Reference** — every option, tag, and lifecycle detail: [README](README.md)
-- **Working app** — all of the above, running: [app/handler-example](../app/handler-example)
+- **Working app** — all of the above, running: the handler-example app (not yet published as a standalone repo)
 - **The one idea to keep** — authorization is *schema-shaping*, enforced both inbound (params filtered before `call`) and outbound (return value projected onto the caller's schema). You shape what each user sees; the gem makes the shape a boundary.
