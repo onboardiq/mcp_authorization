@@ -350,7 +350,14 @@ module McpAuthorization
 
       # Choose the best-matching variant of a union for a given value.
       #
-      # Scoring: count how many of the value's keys appear in the variant's
+      # Discriminated unions come first: if a variant pins a property to a
+      # +const+ (e.g. +type: "SchedulerStage"+) and the value carries that key
+      # with a different value, the variant is disqualified outright. This makes
+      # tagged unions project onto the exact matching member instead of the one
+      # with the most incidental field overlap — and lets a value whose tag
+      # matches no variant fall through to the defensive pass-through below.
+      #
+      # Otherwise: count how many of the value's keys appear in the variant's
       # +properties+, minus how many are unknown. Disqualify variants missing
       # any of the value's keys from their +required+ list that isn't present.
       # Returns nil if no variant can accommodate the value — in which case
@@ -359,14 +366,15 @@ module McpAuthorization
       def best_variant_for(value, variants)
         return variants.first unless value.is_a?(Hash)
 
+        value_keys = value.keys.map(&:to_s)
         scored = variants.filter_map do |variant|
           next unless variant.is_a?(Hash) && variant[:type] == "object"
           props = variant[:properties] || {}
           prop_keys = props.keys.map(&:to_s)
-          value_keys = value.keys.map(&:to_s)
           required = (variant[:required] || []).map(&:to_s)
 
           next if (required - value_keys).any?
+          next if const_discriminator_mismatch?(value, props)
 
           known = (value_keys & prop_keys).size
           unknown = (value_keys - prop_keys).size
@@ -375,6 +383,22 @@ module McpAuthorization
 
         return nil if scored.empty?
         scored.max_by { |score, _| score }&.last
+      end
+
+      # True when +value+ carries a key that +props+ pins to a +const+ but with
+      # a different value — i.e. a discriminated-union tag mismatch. Keys absent
+      # from the value never disqualify (that's a +required+ concern).
+      #: (Hash[untyped, untyped], Hash[untyped, untyped]) -> bool
+      def const_discriminator_mismatch?(value, props)
+        props.any? do |key, schema|
+          next false unless schema.is_a?(Hash) && schema.key?(:const)
+
+          present = value.key?(key.to_sym) || value.key?(key.to_s)
+          next false unless present
+
+          actual = value.key?(key.to_sym) ? value[key.to_sym] : value[key.to_s]
+          actual.to_s != schema[:const].to_s
+        end
       end
 
       # ---------------------------------------------------------------
