@@ -94,6 +94,25 @@ class RuntimeEnforcementTest < Minitest::Test
       "unknown tag must fall through to defensive pass-through, preserving all keys"
   end
 
+  def test_one_of_projects_through_intersection_allof
+    # Union members are intersections (base & own), as produced by a
+    # `base & { ... }` contract. Projection must merge the allOf branches,
+    # match by the const discriminator, keep declared fields (base + own),
+    # and drop undeclared envelope keys.
+    defs = {
+      "base" => { type: "object", properties: { shared: { type: "string" } } }
+    }
+    schema = {
+      oneOf: [
+        { allOf: [{ "$ref": "#/$defs/base" }, { type: "object", properties: { kind: { type: "string", const: "cat" }, meow: { type: "string" } } }] },
+        { allOf: [{ "$ref": "#/$defs/base" }, { type: "object", properties: { kind: { type: "string", const: "dog" }, bark: { type: "string" } } }] }
+      ]
+    }
+    cat = C.send(:project_against_schema, { kind: "cat", shared: "s", meow: "m", success: true }, schema, defs)
+    assert_equal({ kind: "cat", shared: "s", meow: "m" }, cat,
+      "intersection variant must project to base+own fields and drop undeclared keys")
+  end
+
   def test_ref_resolution_via_defs
     defs = { "user" => { type: "object", properties: { name: { type: "string" } } } }
     schema = { "$ref": "#/$defs/user" }

@@ -310,10 +310,16 @@ module McpAuthorization
 
         variants = schema[:oneOf] || schema[:anyOf]
         if variants.is_a?(Array) && !variants.empty?
-          resolved = variants.map { |v| resolve_ref(v, defs) }
+          # Flatten so intersection (allOf) members project like the object
+          # they describe — their discriminator const and merged fields live
+          # across the allOf branches.
+          resolved = variants.map { |v| flatten_all_of(v, defs) }
           best = best_variant_for(value, resolved)
           return best ? project_against_schema(value, best, defs) : value
         end
+
+        # A bare intersection (allOf) — merge its branches and project.
+        return project_against_schema(value, flatten_all_of(schema, defs), defs) if schema[:allOf].is_a?(Array)
 
         case schema[:type]
         when "object"
@@ -383,6 +389,37 @@ module McpAuthorization
 
         return nil if scored.empty?
         scored.max_by { |score, _| score }&.last
+      end
+
+      # Merge an +allOf+ (intersection) schema into a single object schema by
+      # unioning the +properties+/+required+ of every branch (each resolved
+      # through +$ref+). Non-intersection schemas are returned resolved and
+      # unchanged. This lets the union projection treat +allOf: [{$ref base},
+      # {own fields}]+ — the shape produced by a +base & { ... }+ contract —
+      # as the flat record it logically is, so the discriminator const and the
+      # merged field set are visible to +best_variant_for+ and projection.
+      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> untyped
+      def flatten_all_of(schema, defs)
+        schema = resolve_ref(schema, defs)
+        return schema unless schema.is_a?(Hash) && schema[:allOf].is_a?(Array)
+
+        props = {}
+        required = [] #: Array[untyped]
+        additional = nil
+        schema[:allOf].each do |branch|
+          b = flatten_all_of(branch, defs)
+          next unless b.is_a?(Hash)
+          props.merge!(b[:properties]) if b[:properties].is_a?(Hash)
+          required.concat(Array(b[:required]))
+          additional = b[:additionalProperties] if b.key?(:additionalProperties)
+        end
+
+        merged = { type: "object", properties: props } #: Hash[Symbol, untyped]
+        merged[:required] = required.uniq unless required.empty?
+        merged[:additionalProperties] = additional unless additional.nil?
+        # Preserve any sibling keys set alongside allOf (rare, defensive).
+        schema.each { |k, v| merged[k] ||= v unless k == :allOf }
+        merged
       end
 
       # True when +value+ carries a key that +props+ pins to a +const+ but with
@@ -1262,21 +1299,32 @@ module McpAuthorization
       def collect_rbs_file_aliases(content)
         aliases = {}
         current_name = nil #: String?
+        current_base = nil #: String?
         current_body = +""
 
         content.each_line do |line|
           stripped = line.strip
 
-          if stripped =~ /\Atype (\w+) = \{/
+          if stripped =~ /\Atype (\w+) = (\w+) & \{/
+            # Intersection: a base alias merged with an inline record, e.g.
+            #   type scheduler_stage = stage_common & { type: "SchedulerStage", ... }
+            # Captured as {intersection: [base, body]} and resolved to an
+            # allOf so the shared base hoists into $defs once (token dedup).
             current_name = $1.to_s
+            current_base = $2.to_s
+            current_body = "{"
+          elsif stripped =~ /\Atype (\w+) = \{/
+            current_name = $1.to_s
+            current_base = nil
             current_body = "{"
           elsif stripped =~ /\Atype (\w+) = "([^"]+)"/
             aliases[$1.to_s] = parse_rbs_string_union($2.to_s, line, content)
           elsif current_name
             current_body << strip_rbs_comment(stripped)
             if brace_balanced?(current_body)
-              aliases[current_name] = current_body
+              aliases[current_name] = current_base ? { intersection: [current_base, current_body] } : current_body
               current_name = nil
+              current_base = nil
               current_body = +""
             end
           end
@@ -1414,13 +1462,31 @@ module McpAuthorization
       #: (Hash[String, untyped], ?source_file: String?) -> Hash[String, Hash[Symbol, untyped]]
       def resolve_collected_aliases(aliases, source_file: nil)
         resolved = {}
+
+        # Pass 1: plain record bodies and already-resolved values (string
+        # unions). Intersection bases are plain records, so this guarantees a
+        # base is fully resolved before any intersection that references it.
         aliases.each do |name, value|
+          next if value.is_a?(Hash) && value[:intersection]
           resolved[name] = if value.is_a?(String)
             parse_record_type(value, resolved.merge(aliases_to_schemas(aliases, resolved)), source_file: source_file)
           else
             value
           end
         end
+
+        # Pass 2: intersections → allOf[base, record]. The base schema is the
+        # fully-resolved shared type (same object across every member), so
+        # with_ref_injection sees it used many times and hoists it into $defs.
+        aliases.each do |name, value|
+          next unless value.is_a?(Hash) && value[:intersection]
+          base_name, body = value[:intersection]
+          merged = resolved.merge(aliases_to_schemas(aliases, resolved))
+          base_schema = resolved[base_name] || merged[base_name] || { type: "object" }
+          record_schema = parse_record_type(body, merged, source_file: source_file)
+          resolved[name] = { allOf: [base_schema, record_schema] }
+        end
+
         resolved
       end
 
@@ -1662,6 +1728,11 @@ module McpAuthorization
           visit_rbs_type(node.type, type_map, rctx)
         when RBS::Types::Union
           visit_rbs_union(node, type_map, rctx)
+        when RBS::Types::Intersection
+          # A & B → allOf. Lets a field reuse a shared base type plus extra
+          # constraints; mirrors the alias-level intersection handled by
+          # collect_rbs_file_aliases / resolve_collected_aliases.
+          { allOf: node.types.map { |t| visit_rbs_type(t, type_map, rctx) } }
         when RBS::Types::Record
           visit_rbs_record(node, type_map, rctx)
         when RBS::Types::Tuple

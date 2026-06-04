@@ -15,6 +15,7 @@ module McpAuthorization
     def self.resolve_ref: (Hash[Symbol, untyped]?, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]?
     def self.project_against_schema: (untyped, Hash[Symbol, untyped]?, Hash[String, Hash[Symbol, untyped]]) -> untyped
     def self.best_variant_for: (untyped, Array[Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]?
+    def self.flatten_all_of: (untyped, Hash[String, Hash[Symbol, untyped]]) -> untyped
     def self.const_discriminator_mismatch?: (Hash[untyped, untyped], Hash[untyped, untyped]) -> bool
     def self.extract_tags: (String) -> [String, Hash[Symbol, untyped]]
     def self.find_at_depth_zero: (String, Array[String], ?start: Integer) -> Integer?
