@@ -839,10 +839,14 @@ module McpAuthorization
         source_file = find_source_file(handler_class)
         content = source_file && File.exist?(source_file) ? File.read(source_file) : ""
 
-        # Build type map: shared imports first, then handler's own types override
-        imported = load_imports(content)
-        local = parse_type_aliases(content, source_file: source_file)
-        type_map = imported.merge(local)
+        # Build type map: collect the *raw* (unresolved) aliases from every
+        # imported shared file plus the handler's own inline `# @rbs type`
+        # definitions, merge them (local overrides imported), then resolve the
+        # whole set together. Resolving as one set — rather than per file — is
+        # what lets a shared type reference a type defined in another imported
+        # file (e.g. a per-stage contract referencing a shared `move_rule`).
+        raw_aliases = load_import_aliases(content).merge(collect_inline_aliases(content))
+        type_map = resolve_collected_aliases(raw_aliases, source_file: source_file)
 
         # Retain the un-stripped record bodies (tags intact) so nested
         # record aliases can be recompiled per request with predicate
@@ -1152,9 +1156,37 @@ module McpAuthorization
         entry = {
           mtime: mtime,
           result: resolve_collected_aliases(aliases, source_file: path),
-          raw_record_bodies: aliases.select { |_, v| v.is_a?(String) }
+          raw_record_bodies: aliases.select { |_, v| v.is_a?(String) },
+          raw_aliases: aliases
         }
         shared_type_cache[path] = entry
+      end
+
+      # The raw (unresolved) alias map of a shared +.rbs+ file — both record
+      # bodies (String) and pre-resolved string-union schemas. Used to resolve
+      # imports as one merged set so cross-file references resolve.
+      #: (String) -> Hash[String, untyped]
+      def cached_rbs_aliases(path)
+        cached_rbs_entry(path)[:raw_aliases]
+      end
+
+      # Merge the raw aliases from every +# @rbs import+ed file in +content+.
+      # Returned unresolved so the caller can resolve imports + local aliases
+      # together (cross-file references resolve; see build_cache).
+      #: (String) -> Hash[String, untyped]
+      def load_import_aliases(content)
+        return {} if content.empty?
+
+        imports = content.scan(/# @rbs import (\S+)/).flatten
+        return {} if imports.empty?
+
+        raw = {}
+        imports.each do |import_path|
+          rbs_file = resolve_import_path(import_path)
+          next unless rbs_file && File.exist?(rbs_file)
+          raw.merge!(cached_rbs_aliases(rbs_file))
+        end
+        raw
       end
 
       # Resolve a bare import name (e.g. +"common_types"+) to an absolute
@@ -1164,11 +1196,16 @@ module McpAuthorization
       # @return [String, nil] Absolute file path, or nil if not found.
       #: (String) -> String?
       def resolve_import_path(import_path)
-        return nil unless defined?(Rails)
-
         McpAuthorization.config.shared_type_paths.each do |base|
-          candidate = Rails.root.join(base, "#{import_path}.rbs")
-          return candidate.to_s if File.exist?(candidate)
+          candidate =
+            if base.to_s.start_with?(File::SEPARATOR) # absolute base (tests / non-Rails hosts)
+              File.join(base.to_s, "#{import_path}.rbs")
+            elsif defined?(Rails)
+              Rails.root.join(base, "#{import_path}.rbs").to_s
+            else                                       # relative base, no Rails → resolve from CWD
+              File.join(Dir.pwd, base.to_s, "#{import_path}.rbs")
+            end
+          return candidate if File.exist?(candidate)
         end
         nil
       end

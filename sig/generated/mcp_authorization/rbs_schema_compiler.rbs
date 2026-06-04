@@ -38,6 +38,8 @@ module McpAuthorization
     def self.cached_parse_rbs_file: (String) -> Hash[String, Hash[Symbol, untyped]]
     def self.cached_rbs_record_bodies: (String) -> Hash[String, String]
     def self.cached_rbs_entry: (String) -> Hash[Symbol, untyped]
+    def self.cached_rbs_aliases: (String) -> Hash[String, untyped]
+    def self.load_import_aliases: (String) -> Hash[String, untyped]
     def self.resolve_import_path: (String) -> String?
     def self.parse_rbs_file: (String) -> Hash[String, Hash[Symbol, untyped]]
     def self.collect_rbs_file_aliases: (String) -> Hash[String, untyped]

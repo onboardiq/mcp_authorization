@@ -4,6 +4,14 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.5] - 2026-06-04
+
+### Fixed
+- **Shared types can now reference types defined in another imported file.** A `# @rbs import`ed `sig/shared/*.rbs` file may reference a type declared in a *different* imported file (as long as the handler imports both) — e.g. a per-type contract referencing a shared `move_rule` / `template` alias. Previously each shared file was parsed and resolved in isolation, so a cross-file reference degraded to a fallback (`{type: "object"}`/`{type: "string"}`). `build_cache` now collects the *raw* (unresolved) aliases from every imported file plus the handler's own inline `# @rbs type` definitions, merges them (local overrides imported), and resolves the whole set together, so cross-file references resolve. Within-file references and `$defs` deduplication are unchanged.
+
+### Changed
+- **Shared-type import resolution no longer requires Rails.** `resolve_import_path` now resolves absolute `shared_type_paths` directly and falls back to the current working directory when Rails is absent, instead of returning `nil` whenever `Rails` is undefined. Rails hosts using a relative path (e.g. `"sig/shared"`) are unaffected (still resolved against `Rails.root`); this makes shared imports usable — and testable — outside Rails.
+
 ## [0.5.4] - 2026-06-04
 
 ### Fixed
