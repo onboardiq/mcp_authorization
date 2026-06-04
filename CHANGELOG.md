@@ -4,6 +4,17 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.4] - 2026-06-04
+
+### Fixed
+- **Predicate gating (`@requires`/`@feature`/`@hidden`/…) now recurses into nested record types.** ([#23](https://github.com/onboardiq/mcp_authorization/issues/23))
+
+  Per-request gating was only applied to the top-level fields of a handler's own input record / `#:` params and to top-level output-union variants. A gated field *inside* a nested record alias (a `# @rbs type foo = { ... }` referenced as `Array[foo]`, as a nested property, or imported from `sig/shared/*.rbs`) was resolved from the statically-compiled `type_map` and never filtered against `server_context`, so it leaked into the schema for every user — silently defeating the field-shaping the DSL advertises. The compiler now threads a per-request resolution context (`server_context` + the retained, tag-intact raw record bodies) through the type visitor: when a named record alias is referenced, it is recompiled with `compile_tagged_record` so its own predicate-gated fields are filtered at any nesting depth, including across imports. A `visiting` stack guards against recursive types. Runtime enforcement (`filter_input`/`filter_output`) inherits the fix, since it projects against the same per-request schema. Predicate-free aliases still dedupe into `$defs` exactly as before.
+
+- **`untyped` now compiles to the empty schema `{}` ("any value"), not `{type: "string"}`.** ([#22](https://github.com/onboardiq/mcp_authorization/issues/22))
+
+  `untyped` (RBS `Bases::Any`/`Void`/`Nil`) emitted `{type: "string"}` despite the inline comment promising "no constraint". The most common casualty was `Hash[K, untyped]`, which compiled to `{type: "object", additionalProperties: {type: "string"}}` — forcing *every* property value to be a string. A payload carrying a nested object or array under such a param listed fine in `tools/list` but was rejected server-side at `tools/call` (`"… did not match the following type: string"`). `untyped` now maps to `{}`, so `Hash[K, untyped]` becomes `{type: "object", additionalProperties: {}}` (any value allowed) and bare `untyped` becomes `{}`. Relatedly, `project_against_schema` now honors `additionalProperties`: an explicitly-open object (e.g. an `untyped` hash) keeps its undeclared keys through runtime projection instead of being emptied before the handler runs, while objects with no `additionalProperties` (or `additionalProperties: false`, e.g. `@closed`) keep the closed-by-default projection that enforces `@requires` gating.
+
 ## [0.5.3] - 2026-06-03
 
 ### Fixed
