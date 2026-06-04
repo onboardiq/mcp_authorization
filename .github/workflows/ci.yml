@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Span the supported range (gemspec: required_ruby_version >= 3.1).
+        ruby: ["3.1", "3.2", "3.3", "3.4"]
+    name: test (ruby ${{ matrix.ruby }})
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Ruby ${{ matrix.ruby }}
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+
+      - name: Run tests
+        run: bundle exec rake test
+
+  sentinel:
+    runs-on: ubuntu-latest
+    name: sentinel (rbs sigs current)
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      # Fails if the committed sig/generated/*.rbs drift from the inline
+      # #: annotations — i.e. someone added/changed a method without
+      # running `bundle exec sentinel init`.
+      - name: Verify generated RBS signatures are current
+        run: bundle exec sentinel check

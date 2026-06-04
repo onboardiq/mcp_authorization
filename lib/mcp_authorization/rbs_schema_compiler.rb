@@ -4,6 +4,7 @@
 # stdlib type signatures, ...) we never touch — ~15 MB RSS vs ~1.2 MB for
 # the subset below. Load order matters: location_aux uses the C-defined
 # RBS::Location, and rbs_extension assumes RBS::AST::* namespaces exist.
+require "pathname" # rbs 4.x's parser_aux references Pathname at load time
 require "rbs/version"
 require "rbs/errors"
 require "rbs/buffer"
@@ -17,6 +18,23 @@ require "rbs/ast/declarations"
 require "rbs/ast/members"
 require "rbs/ast/annotation"
 require "rbs/ast/comment"
+# rbs 4.x's C extension (rbs_extension) references the RBS::AST::Ruby::*
+# namespace, which did not exist on rbs 3.x. Require those files when the
+# installed rbs ships them so the narrow load path stays correct across
+# the gemspec's supported range (rbs >= 3.0); ignore on versions that
+# predate the namespace, where rbs_extension does not need it.
+%w[
+  rbs/ast/ruby/helpers/constant_helper
+  rbs/ast/ruby/helpers/location_helper
+  rbs/ast/ruby/annotations
+  rbs/ast/ruby/comment_block
+  rbs/ast/ruby/declarations
+  rbs/ast/ruby/members
+].each do |feature|
+  require feature
+rescue LoadError
+  # rbs < 4: file absent and rbs_extension does not reference it.
+end
 require "rbs_extension"
 require "rbs/location_aux"
 require "rbs/parser_aux"
@@ -1076,7 +1094,7 @@ module McpAuthorization
           elsif stripped =~ /\Atype (\w+) = "([^"]+)"/
             aliases[$1.to_s] = parse_rbs_string_union($2.to_s, line, content)
           elsif current_name
-            current_body << stripped
+            current_body << strip_rbs_comment(stripped)
             if brace_balanced?(current_body)
               aliases[current_name] = current_body
               current_name = nil
@@ -1138,7 +1156,7 @@ module McpAuthorization
           if line =~ /# @rbs type #{pattern} = \{/
             body = "{"
             rest.each do |next_line|
-              stripped = next_line.strip.sub(/^#\s*/, "")
+              stripped = strip_rbs_comment(next_line.strip.sub(/^#\s*/, ""))
               body << stripped
               return { kind: :record, body: body } if brace_balanced?(body)
             end
@@ -1187,7 +1205,7 @@ module McpAuthorization
           elsif line =~ /# @rbs type (\w+) = "([^"]+)"/
             aliases[$1.to_s] = parse_string_union($2.to_s, line, content)
           elsif current_name
-            stripped = line.strip.sub(/^#\s*/, "")
+            stripped = strip_rbs_comment(line.strip.sub(/^#\s*/, ""))
             current_body << stripped
             if brace_balanced?(current_body)
               aliases[current_name] = current_body
@@ -1324,6 +1342,42 @@ module McpAuthorization
       # which silently dropped any field whose type string contained a
       # comma — or worse, split that field at the comma.
       #
+      # Strip an RBS line comment (+#+ to end-of-line) from a single line.
+      #
+      # RBS treats +#+ as a comment marker everywhere outside string
+      # literals — the official lexer discards it before parsing. The
+      # line-based readers here (+find_raw_type_body+, +parse_type_aliases+,
+      # +parse_rbs_file+) concatenate record-body lines *without* a newline
+      # separator, so a comment authored inside a record body
+      # (+{ # note\n id: String }+) would otherwise fold into the next
+      # field name and blow up +parse_field_name+ (issue #20).
+      #
+      # We scan character by character so a +#+ inside a string literal or
+      # inside a bracketed annotation value (e.g. +@desc(a # b)+) is left
+      # untouched; only a +#+ at bracket depth 0 outside any string starts
+      # a comment.
+      #: (String) -> String
+      def strip_rbs_comment(line)
+        depth = 0
+        in_string = nil #: String?
+
+        line.each_char.with_index do |ch, i|
+          if in_string
+            in_string = nil if ch == in_string
+          elsif ch == '"' || ch == "'"
+            in_string = ch
+          elsif ch == "(" || ch == "[" || ch == "{"
+            depth += 1
+          elsif ch == ")" || ch == "]" || ch == "}"
+            depth -= 1
+          elsif ch == "#" && depth <= 0
+            return line[0...i].to_s.rstrip
+          end
+        end
+
+        line
+      end
+
       #: (String) { (String, String) -> void } -> void
       def each_field_in_record(body)
         inner = body.strip.sub(/\A\{/, "").sub(/\}\z/, "").strip
