@@ -6,6 +6,9 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.5.5] - 2026-06-04
 
+### Fixed
+- **`$defs` deduplication now ref-injects *inside* hoisted defs and prunes unreferenced ones.** `with_ref_injection` hoisted a multi-use type into `$defs` and `$ref`d it from the main schema, but left the def's *body* untouched — so a nested multi-use type (e.g. a shared base that inlines a template used elsewhere) stayed fully inlined inside the hoisted base **and** got hoisted again into a separate, never-referenced def. Each def body is now itself ref-injected (replacing nested multi-use types with `$ref`, excluding self), and any def left unreferenced (transitively from the root) is dropped. For a large discriminated union with a shared base, this removes both the duplicated nested types and the dead defs — a substantial `tools/list` size reduction with identical semantics.
+
 ### Added
 - **Record intersection (`type x = base & { ... }`) compiles to `allOf`.** A shared `.rbs` type alias may now intersect a base type with an inline record — e.g. `type scheduler_stage = stage_common & { type: "SchedulerStage", ... }`. The base resolves first and, because it appears identically across every intersection that uses it, `with_ref_injection` hoists it into `$defs` once and `$ref`s it from each member. For a large discriminated union whose members share most of their fields, this collapses the duplicated common fields into a single `$def` (major token reduction in `tools/list`) while keeping full per-type typing. Field-level `&` in RBS type expressions also maps to `allOf`. Runtime projection (`filter_input`/`filter_output`) flattens `allOf` members — merging base + own `properties`/`required` and resolving `$ref`s — so discriminator-`const` matching and field projection work through the intersection.
 

@@ -1960,12 +1960,66 @@ module McpAuthorization
         multi = usage.select { |_, c| c > 1 }
         return schema if multi.empty?
 
-        defs = {}
-        multi.each_key { |name| defs[name] = type_schemas[name] }
-
         replaced = deep_replace(schema, multi, type_schemas)
-        replaced[:"$defs"] = defs
+
+        # Ref-inject *within* each hoisted def too: a def's body may itself
+        # contain another multi-use type (e.g. a shared base that inlines a
+        # template referenced elsewhere). Replace those with $ref — excluding
+        # the def's own name so a body never self-references — so each shared
+        # type is spelled out once in $defs rather than re-inlined inside
+        # another def. Without this, hoisting a large base left the base's
+        # nested types inlined AND duplicated as unreferenced defs.
+        defs = {}
+        multi.each_key do |name|
+          others = multi.reject { |k, _| k == name }
+          defs[name] = deep_replace(type_schemas[name], others, type_schemas)
+        end
+
+        # Drop defs that nothing references (transitively from the main
+        # schema). Hoisting can orphan a type whose every occurrence ended up
+        # inside another def that was itself replaced by a $ref.
+        defs = prune_unreferenced_defs(replaced, defs)
+
+        replaced[:"$defs"] = defs unless defs.empty?
         replaced
+      end
+
+      # Names of +$defs+ reachable (transitively) from +root+. Used to drop
+      # hoisted-but-unreferenced defs.
+      #: (Hash[Symbol, untyped], Hash[String, Hash[Symbol, untyped]]) -> Hash[String, Hash[Symbol, untyped]]
+      def prune_unreferenced_defs(root, defs)
+        reachable = [] #: Array[String]
+        frontier = referenced_def_names(root)
+        until frontier.empty?
+          name = frontier.shift
+          next if reachable.include?(name)
+          reachable << name
+          referenced_def_names(defs[name]).each { |n| frontier << n } if defs[name]
+        end
+        defs.select { |name, _| reachable.include?(name) }
+      end
+
+      # Collect every +#/$defs/<name>+ target referenced anywhere in +node+.
+      #: (untyped) -> Array[String]
+      def referenced_def_names(node)
+        names = [] #: Array[String]
+        stack = [node] #: Array[untyped]
+        until stack.empty?
+          n = stack.pop
+          case n
+          when Hash
+            n.each do |k, v|
+              if (k == :"$ref" || k == "$ref") && v.is_a?(String)
+                names << v.split("/").last.to_s
+              else
+                stack << v
+              end
+            end
+          when Array
+            n.each { |e| stack << e }
+          end
+        end
+        names
       end
 
       # Walk the schema tree and count how many times each named type's

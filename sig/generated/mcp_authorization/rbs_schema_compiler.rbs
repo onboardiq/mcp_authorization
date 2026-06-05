@@ -68,6 +68,8 @@ module McpAuthorization
     def self.brace_balanced?: (String) -> bool
     def self.parse_string_union: (String, String, String) -> Hash[Symbol, untyped]
     def self.with_ref_injection: (Hash[Symbol, untyped], Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+    def self.prune_unreferenced_defs: (Hash[Symbol, untyped], Hash[String, Hash[Symbol, untyped]]) -> Hash[String, Hash[Symbol, untyped]]
+    def self.referenced_def_names: (untyped) -> Array[String]
     def self.count_usages: (Hash[Symbol, untyped], Hash[String, Hash[Symbol, untyped]], Hash[String, Integer]) -> void
     def self.deep_replace: (Hash[Symbol, untyped], Hash[String, Integer], Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
   end
