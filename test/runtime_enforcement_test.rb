@@ -65,6 +65,54 @@ class RuntimeEnforcementTest < Minitest::Test
     assert_equal val, C.send(:project_against_schema, val, schema, {})
   end
 
+  def test_one_of_honors_const_discriminator
+    # Two variants share many keys but are tagged by a `type` const. The value
+    # must project onto the member whose const matches its tag, not the one with
+    # the most field overlap.
+    schema = {
+      oneOf: [
+        { type: "object", properties: { type: { type: "string", const: "cat" }, meow: { type: "string" }, name: { type: "string" } } },
+        { type: "object", properties: { type: { type: "string", const: "dog" }, bark: { type: "string" }, name: { type: "string" }, breed: { type: "string" } } }
+      ]
+    }
+    cat = C.send(:project_against_schema, { type: "cat", meow: "mrrp", name: "Tom", breed: "leak" }, schema, {})
+    assert_equal({ type: "cat", meow: "mrrp", name: "Tom" }, cat,
+      "value tagged 'cat' must project onto the cat variant even though dog has more overlapping keys")
+  end
+
+  def test_one_of_const_tag_matching_no_variant_passes_through
+    # A discriminated union whose tag matches no member leaves the value intact
+    # rather than mis-projecting onto an incidental best-overlap variant.
+    schema = {
+      oneOf: [
+        { type: "object", properties: { type: { type: "string", const: "cat" }, name: { type: "string" } } },
+        { type: "object", properties: { type: { type: "string", const: "dog" }, name: { type: "string" } } }
+      ]
+    }
+    val = { type: "fish", name: "Nemo", fins: 2 }
+    assert_equal val, C.send(:project_against_schema, val, schema, {}),
+      "unknown tag must fall through to defensive pass-through, preserving all keys"
+  end
+
+  def test_one_of_projects_through_intersection_allof
+    # Union members are intersections (base & own), as produced by a
+    # `base & { ... }` contract. Projection must merge the allOf branches,
+    # match by the const discriminator, keep declared fields (base + own),
+    # and drop undeclared envelope keys.
+    defs = {
+      "base" => { type: "object", properties: { shared: { type: "string" } } }
+    }
+    schema = {
+      oneOf: [
+        { allOf: [{ "$ref": "#/$defs/base" }, { type: "object", properties: { kind: { type: "string", const: "cat" }, meow: { type: "string" } } }] },
+        { allOf: [{ "$ref": "#/$defs/base" }, { type: "object", properties: { kind: { type: "string", const: "dog" }, bark: { type: "string" } } }] }
+      ]
+    }
+    cat = C.send(:project_against_schema, { kind: "cat", shared: "s", meow: "m", success: true }, schema, defs)
+    assert_equal({ kind: "cat", shared: "s", meow: "m" }, cat,
+      "intersection variant must project to base+own fields and drop undeclared keys")
+  end
+
   def test_ref_resolution_via_defs
     defs = { "user" => { type: "object", properties: { name: { type: "string" } } } }
     schema = { "$ref": "#/$defs/user" }

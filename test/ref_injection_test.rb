@@ -130,4 +130,47 @@ class RefInjectionTest < Minitest::Test
     assert_equal({ "$ref": "#/$defs/shared" }, result[:properties][:a])
     assert_equal other, result[:properties][:b]
   end
+
+  def test_nested_multiuse_type_is_reffed_inside_a_def_not_inlined
+    # `tpl` is used 4× inside `base`; `base` itself is multi-use. When `base`
+    # is hoisted into $defs, the `tpl` occurrences *inside* it must become
+    # $refs to a single `tpl` def — not stay inlined (which also left `tpl`
+    # hoisted-but-unreferenced).
+    tpl = { type: "object", properties: { subject: { type: "string" }, body: { type: "string" } } }
+    base = {
+      type: "object",
+      properties: { a_tpl: tpl, b_tpl: tpl, c_tpl: tpl, d_tpl: tpl, name: { type: "string" } }
+    }
+    type_map = { "tpl" => tpl, "base" => base }
+    schema = { type: "object", oneOf: [base, base, base] }
+
+    result = C.send(:with_ref_injection, schema, type_map)
+    defs = result[:"$defs"]
+    assert defs.key?("base"), "base should be hoisted"
+    assert defs.key?("tpl"), "tpl should be hoisted"
+
+    base_def = defs["base"]
+    %i[a_tpl b_tpl c_tpl d_tpl].each do |k|
+      assert_equal "#/$defs/tpl", base_def[:properties][k][:"$ref"],
+        "#{k} inside the base def must be a $ref to tpl, not inlined"
+    end
+
+    blob = result.to_json
+    defs.each_key do |name|
+      assert blob.include?("#/$defs/#{name}"), "$defs/#{name} must be referenced (no dead defs)"
+    end
+  end
+
+  def test_unreferenced_def_is_pruned
+    inner = { type: "object", properties: { v: { type: "string" } } }
+    wrapper = { type: "object", properties: { one: inner, two: inner } }
+    type_map = { "inner" => inner, "wrapper" => wrapper }
+
+    schema = { type: "object", oneOf: [wrapper, wrapper] }
+    result = C.send(:with_ref_injection, schema, type_map)
+
+    result[:"$defs"].each_key do |name|
+      assert result.to_json.include?("#/$defs/#{name}"), "no dead def: #{name}"
+    end
+  end
 end

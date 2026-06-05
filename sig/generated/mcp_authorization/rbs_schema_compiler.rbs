@@ -15,6 +15,8 @@ module McpAuthorization
     def self.resolve_ref: (Hash[Symbol, untyped]?, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]?
     def self.project_against_schema: (untyped, Hash[Symbol, untyped]?, Hash[String, Hash[Symbol, untyped]]) -> untyped
     def self.best_variant_for: (untyped, Array[Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]?
+    def self.flatten_all_of: (untyped, Hash[String, Hash[Symbol, untyped]]) -> untyped
+    def self.const_discriminator_mismatch?: (Hash[untyped, untyped], Hash[untyped, untyped]) -> bool
     def self.extract_tags: (String) -> [String, Hash[Symbol, untyped]]
     def self.find_at_depth_zero: (String, Array[String], ?start: Integer) -> Integer?
     def self.split_at_depth_zero: (String, String) -> Array[String]
@@ -26,35 +28,50 @@ module McpAuthorization
     def self.apply_tags: (Hash[Symbol, untyped], Hash[Symbol, untyped], ?server_context: untyped?) -> Hash[Symbol, untyped]
     def self.cache_for: (untyped) -> Hash[Symbol, untyped]
     def self.build_cache: (untyped) -> Hash[Symbol, untyped]
+    def self.build_rctx: (untyped, Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
+    def self.resolve_named_type: (String, Hash[String, Hash[Symbol, untyped]], Hash[Symbol, untyped]?, Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
     def self.predicate_excluded?: (Hash[Symbol, untyped], untyped) -> bool
     def self.warn_unknown_predicate: (String, untyped) -> void
-    def self.compile_tagged_record: (String, Hash[String, Hash[Symbol, untyped]], untyped, ?source_file: String?) -> Hash[Symbol, untyped]
-    def self.compile_tagged_union: (String, Hash[String, Hash[Symbol, untyped]], untyped) -> Hash[Symbol, untyped]
-    def self.filter_call_signature: (Array[Hash[Symbol, untyped]], Hash[String, Hash[Symbol, untyped]], untyped) -> Hash[Symbol, untyped]
+    def self.compile_tagged_record: (String, Hash[String, Hash[Symbol, untyped]], untyped, ?source_file: String?, ?rctx: Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+    def self.tagged_union_field?: (String) -> bool
+    def self.tagged_array_union_inner: (String) -> String?
+    def self.compile_tagged_union: (String, Hash[String, Hash[Symbol, untyped]], untyped, ?rctx: Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+    def self.filter_call_signature: (Array[Hash[Symbol, untyped]], Hash[String, Hash[Symbol, untyped]], untyped, ?rctx: Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
     def self.load_imports: (String) -> Hash[String, Hash[Symbol, untyped]]
+    def self.load_import_raw_bodies: (String) -> Hash[String, String]
     def self.cached_parse_rbs_file: (String) -> Hash[String, Hash[Symbol, untyped]]
+    def self.cached_rbs_record_bodies: (String) -> Hash[String, String]
+    def self.cached_rbs_entry: (String) -> Hash[Symbol, untyped]
+    def self.cached_rbs_aliases: (String) -> Hash[String, untyped]
+    def self.load_import_aliases: (String) -> Hash[String, untyped]
     def self.resolve_import_path: (String) -> String?
     def self.parse_rbs_file: (String) -> Hash[String, Hash[Symbol, untyped]]
+    def self.collect_rbs_file_aliases: (String) -> Hash[String, untyped]
     def self.parse_rbs_string_union: (String, String, String) -> Hash[Symbol, untyped]
     def self.find_raw_type_body: (String, String) -> Hash[Symbol, untyped]?
     def self.parse_type_aliases: (String, ?source_file: String?) -> Hash[String, Hash[Symbol, untyped]]
+    def self.collect_inline_aliases: (String) -> Hash[String, untyped]
+    def self.collect_inline_record_bodies: (String) -> Hash[String, String]
+    def self.resolve_collected_aliases: (Hash[String, untyped], ?source_file: String?) -> Hash[String, Hash[Symbol, untyped]]
     def self.parse_call_params: (String, ?source_file: String?) -> Array[Hash[Symbol, untyped]]
     def self.aliases_to_schemas: (Hash[String, untyped], Hash[String, Hash[Symbol, untyped]]) -> Hash[String, Hash[Symbol, untyped]]
     def self.parse_record_type: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?) -> Hash[Symbol, untyped]
     def self.strip_rbs_comment: (String) -> String
     def self.each_field_in_record: (String) { (String, String) -> void } -> void
-    def self.rbs_type_to_json_schema: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?) -> Hash[Symbol, untyped]
-    def self.visit_rbs_type: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
-    def self.visit_rbs_class_instance: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+    def self.rbs_type_to_json_schema: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?, ?rctx: Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+    def self.visit_rbs_type: (untyped, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+    def self.visit_rbs_class_instance: (untyped, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
     def self.visit_rbs_literal: (untyped) -> Hash[Symbol, untyped]
-    def self.visit_rbs_union: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
-    def self.visit_rbs_record: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
-    def self.resolve_type: (String, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+    def self.visit_rbs_union: (untyped, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+    def self.visit_rbs_record: (untyped, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+    def self.resolve_type: (String, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
     def self.build_input_schema: (Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
     def self.find_source_file: (untyped) -> String?
     def self.brace_balanced?: (String) -> bool
     def self.parse_string_union: (String, String, String) -> Hash[Symbol, untyped]
     def self.with_ref_injection: (Hash[Symbol, untyped], Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
+    def self.prune_unreferenced_defs: (Hash[Symbol, untyped], Hash[String, Hash[Symbol, untyped]]) -> Hash[String, Hash[Symbol, untyped]]
+    def self.referenced_def_names: (untyped) -> Array[String]
     def self.count_usages: (Hash[Symbol, untyped], Hash[String, Hash[Symbol, untyped]], Hash[String, Integer]) -> void
     def self.deep_replace: (Hash[Symbol, untyped], Hash[String, Integer], Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
   end
