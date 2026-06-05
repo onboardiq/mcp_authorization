@@ -1045,6 +1045,20 @@ module McpAuthorization
         dependent_required = {}
 
         each_field_in_record(raw_body) do |key, type_str|
+          # A union field whose members carry their own predicate tags (e.g.
+          # account-gated variants: `stage: a @feature(x) | b @feature(y)`)
+          # routes through compile_tagged_union so each member is filtered per
+          # request. The normal path's field-level extract_tags would otherwise
+          # bind a member's tag to the whole field. Only triggers when the field
+          # is a multi-member union AND carries a tag, so untagged union fields
+          # keep the full RBS-library path (which handles inline records, etc.).
+          if tagged_union_field?(type_str)
+            clean_key, optional = parse_field_name(key, source_file: source_file)
+            properties[clean_key.to_sym] = compile_tagged_union(type_str, type_map, server_context, rctx: rctx)
+            required << clean_key unless optional
+            next
+          end
+
           type_str, tags = extract_tags(type_str)
 
           next if predicate_excluded?(tags, server_context)
@@ -1065,6 +1079,15 @@ module McpAuthorization
         schema[:required] = required if required.any?
         schema[:dependentRequired] = dependent_required if dependent_required.any?
         schema
+      end
+
+      # True when a record field's type is a multi-member union that carries a
+      # predicate tag — i.e. per-member gating is intended. A `|` at bracket
+      # depth 0 marks a real union (not one inside a nested generic/record).
+      #: (String) -> bool
+      def tagged_union_field?(type_str)
+        return false unless type_str.include?("@")
+        split_at_depth_zero(type_str, "|").size > 1
       end
 
       # Compile a union-style output type (+# @rbs type output = success | admin_detail @requires(:admin)+)

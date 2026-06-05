@@ -158,6 +158,81 @@ class NestedPredicateGatingTest < Minitest::Test
     assert_equal %i[x y], a[:properties].keys
   end
 
+  # --- Tagged union nested in a record field: per-member gating ---
+
+  def test_tagged_union_field_drops_unavailable_members
+    handler = build_handler(<<~SRC)
+      # @rbs type alpha = {
+      #   type: "Alpha",
+      #   a: String
+      # }
+      # @rbs type beta = {
+      #   type: "Beta",
+      #   b: String
+      # }
+      class <%= klass_name %>
+        # @rbs type input = {
+        #   workflow_id: String,
+        #   stage: alpha @stage_ok(Alpha) | beta @stage_ok(Beta)
+        # }
+        #: (**untyped) -> untyped
+        def call(**); end
+      end
+    SRC
+
+    ctx = Object.new
+    def ctx.requires?(_) = true
+    def ctx.feature?(_) = true
+    def ctx.hidden?(_) = false
+    def ctx.current_user = nil
+    def ctx.stage_ok?(name) = name.to_s == "Alpha"
+
+    schema = C.compile_input(handler, server_context: ctx)
+    stage = resolve(schema.dig(:properties, :stage), schema)
+    members = stage[:oneOf] || stage[:anyOf]
+    if members
+      consts = members.map { |m| resolve(m, schema).dig(:properties, :type, :const) }.compact
+      assert_equal ["Alpha"], consts, "only the available member should remain"
+    else
+      assert_equal "Alpha", stage.dig(:properties, :type, :const),
+        "single surviving member should not be wrapped in oneOf"
+    end
+  end
+
+  def test_tagged_union_field_keeps_all_members_when_all_available
+    handler = build_handler(<<~SRC)
+      # @rbs type alpha = {
+      #   type: "Alpha",
+      #   a: String
+      # }
+      # @rbs type beta = {
+      #   type: "Beta",
+      #   b: String
+      # }
+      class <%= klass_name %>
+        # @rbs type input = {
+        #   workflow_id: String,
+        #   stage: alpha @stage_ok(Alpha) | beta @stage_ok(Beta)
+        # }
+        #: (**untyped) -> untyped
+        def call(**); end
+      end
+    SRC
+
+    ctx = Object.new
+    def ctx.requires?(_) = true
+    def ctx.feature?(_) = true
+    def ctx.hidden?(_) = false
+    def ctx.current_user = nil
+    def ctx.stage_ok?(_) = true
+
+    schema = C.compile_input(handler, server_context: ctx)
+    stage = resolve(schema.dig(:properties, :stage), schema)
+    members = stage[:oneOf] || stage[:anyOf]
+    consts = members.map { |m| resolve(m, schema).dig(:properties, :type, :const) }.compact.sort
+    assert_equal %w[Alpha Beta], consts
+  end
+
   private
 
   def build_handler(template)
