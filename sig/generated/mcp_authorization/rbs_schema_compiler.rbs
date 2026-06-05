@@ -34,6 +34,7 @@ module McpAuthorization
     def self.warn_unknown_predicate: (String, untyped) -> void
     def self.compile_tagged_record: (String, Hash[String, Hash[Symbol, untyped]], untyped, ?source_file: String?, ?rctx: Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
     def self.tagged_union_field?: (String) -> bool
+    def self.tagged_array_union_inner: (String) -> String?
     def self.compile_tagged_union: (String, Hash[String, Hash[Symbol, untyped]], untyped, ?rctx: Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
     def self.filter_call_signature: (Array[Hash[Symbol, untyped]], Hash[String, Hash[Symbol, untyped]], untyped, ?rctx: Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
     def self.load_imports: (String) -> Hash[String, Hash[Symbol, untyped]]

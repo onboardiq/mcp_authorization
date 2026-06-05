@@ -1059,6 +1059,16 @@ module McpAuthorization
             next
           end
 
+          # Array of a tagged union — `items: Array[a @feature(x) | b @feature(y)]`.
+          # The union's `|` is at bracket depth 1, so tagged_union_field? misses
+          # it; gate the element union and wrap it back in an array schema.
+          if (inner = tagged_array_union_inner(type_str))
+            clean_key, optional = parse_field_name(key, source_file: source_file)
+            properties[clean_key.to_sym] = { type: "array", items: compile_tagged_union(inner, type_map, server_context, rctx: rctx) }
+            required << clean_key unless optional
+            next
+          end
+
           type_str, tags = extract_tags(type_str)
 
           next if predicate_excluded?(tags, server_context)
@@ -1088,6 +1098,20 @@ module McpAuthorization
       def tagged_union_field?(type_str)
         return false unless type_str.include?("@")
         split_at_depth_zero(type_str, "|").size > 1
+      end
+
+      # If a field type is +Array[<multi-member tagged union>]+, return the inner
+      # union expression so its members can be gated per request; else nil. The
+      # union lives inside the +[]+ (bracket depth 1), so tagged_union_field?
+      # (which only sees depth 0) does not match it.
+      #: (String) -> String?
+      def tagged_array_union_inner(type_str)
+        return nil unless type_str.include?("@")
+        m = type_str.strip.match(/\AArray\[(.+)\]\z/m)
+        return nil unless m
+
+        inner = m[1].to_s
+        split_at_depth_zero(inner, "|").size > 1 ? inner : nil
       end
 
       # Compile a union-style output type (+# @rbs type output = success | admin_detail @requires(:admin)+)

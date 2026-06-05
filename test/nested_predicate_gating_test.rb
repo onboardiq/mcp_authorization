@@ -233,6 +233,46 @@ class NestedPredicateGatingTest < Minitest::Test
     assert_equal %w[Alpha Beta], consts
   end
 
+  def test_array_of_tagged_union_gates_members
+    handler = build_handler(<<~SRC)
+      # @rbs type alpha = {
+      #   type: "Alpha",
+      #   a: String
+      # }
+      # @rbs type beta = {
+      #   type: "Beta",
+      #   b: String
+      # }
+      class <%= klass_name %>
+        # @rbs type input = {
+        #   workflow_id: String,
+        #   stages: Array[alpha @stage_ok(Alpha) | beta @stage_ok(Beta)]
+        # }
+        #: (**untyped) -> untyped
+        def call(**); end
+      end
+    SRC
+
+    ctx = Object.new
+    def ctx.requires?(_) = true
+    def ctx.feature?(_) = true
+    def ctx.hidden?(_) = false
+    def ctx.current_user = nil
+    def ctx.stage_ok?(name) = name.to_s == "Alpha"
+
+    schema = C.compile_input(handler, server_context: ctx)
+    stages = schema.dig(:properties, :stages)
+    assert_equal "array", stages[:type], "stages must stay an array"
+    items = resolve(stages[:items], schema)
+    members = items[:oneOf] || items[:anyOf]
+    if members
+      consts = members.map { |m| resolve(m, schema).dig(:properties, :type, :const) }.compact
+      assert_equal ["Alpha"], consts, "only the available element variant should remain"
+    else
+      assert_equal "Alpha", items.dig(:properties, :type, :const)
+    end
+  end
+
   private
 
   def build_handler(template)
