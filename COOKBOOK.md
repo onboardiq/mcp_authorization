@@ -266,13 +266,13 @@ type applicant = {
 
 ```rbs
 # sig/shared/error.rbs
-type error_code = "applicant_not_found"
-               | "stage_transition_invalid"
-               | "already_at_stage"
-
+# `code` is an open String: every domain returns its own failure codes
+# (recruiting uses "applicant_not_found"/"stage_transition_invalid"/...,
+# the database and socket recipes below add "query_failed"/"host_not_allowed").
+# Narrow it per domain when you want the schema to enumerate them — see Result.
 type error = {
   success: false,
-  error: { code: error_code, message: String, hint: String }
+  error: { code: String, message: String, hint: String }
 }
 ```
 
@@ -285,7 +285,12 @@ type error = {
 # @rbs type output  = success | error
 ```
 
-**Result.** The compiler loads the `.rbs` files, merges their types into the handler's type map, and a handler's own `@rbs type` wins on name conflict. Shared types define **shapes only** — keep `@requires` on the handler, since authorization is a local policy decision, not a property of the type.
+**Result.** The compiler loads the `.rbs` files, merges their types into the handler's type map, and a handler's own `@rbs type` wins on name conflict. Shared types define **shapes only** — keep `@requires` on the handler, since authorization is a local policy decision, not a property of the type. Leaving `code` an open `String` keeps the shared shape honest across domains; if you want one domain's schema to *enumerate* its codes, narrow it locally with a string-literal union, which compiles to a JSON Schema `enum`:
+
+```ruby
+# @rbs type error_code = "applicant_not_found" | "stage_transition_invalid" | "already_at_stage"
+# @rbs type error = { success: false, error: { code: error_code, message: String, hint: String } }
+```
 
 ---
 
@@ -534,8 +539,11 @@ module Workflows
     # }
 
     # @rbs type success     = { success: true, total: Integer, applicants: Array[applicant_summary] }
-    # @rbs type pii_success = { success: true, total: Integer, applicants: Array[pii_summary]  @requires(:view_pii) }
-    # @rbs type output = success | pii_success | error
+    # @rbs type pii_success = { success: true, total: Integer, applicants: Array[pii_summary] }
+    # Gate the whole VARIANT, not a field inside it — and list it first (see Result).
+    # @rbs type output = pii_success @requires(:view_pii)
+    #                  | success
+    #                  | error
 
     def description
       "Search applicants by name fragment and/or current stage."
@@ -568,7 +576,9 @@ module Workflows
     private
 
     def summarize(applicant)
-      base = { id: applicant.id, name: applicant.name, stage: applicant.stage }
+      # id is declared `String` in the type — to_s it, since projection
+      # passes values through without coercing them.
+      base = { id: applicant.id.to_s, name: applicant.name, stage: applicant.stage }
       return base unless can?(:view_pii)
 
       base.merge(email: applicant.email, phone: applicant.phone)
@@ -577,7 +587,7 @@ module Workflows
 end
 ```
 
-**Result.** The query is parameterized, so a `query:` of `"'; DROP TABLE applicants; --"` is matched as a literal name fragment, not executed. PII is doubly protected: the `pii_success` variant is `@requires(:view_pii)`, so for a user without that flag the gem **projects the return value onto the non-PII schema and strips `email`/`phone` before serialization** — even though `summarize` only adds them when `can?(:view_pii)`, the schema is the real backstop. Pagination is bounded by `@max(100)` so the LLM can't ask for a million rows.
+**Result.** The query is parameterized, so a `query:` of `"'; DROP TABLE applicants; --"` is matched as a literal name fragment, not executed. PII is protected in two layers. The source of truth is `summarize`: it only adds `email`/`phone` when `can?(:view_pii)`. The schema is the backstop — but only if you gate the right thing. `pii_success` is a **`@requires(:view_pii)` *variant*** (the tag sits on the union member, not on a field inside the named type — a field-level tag on a variant resolved by name is honored for nesting but the wrong tool for "show this whole shape to some users"). For a user without the flag, the variant is dropped from the output schema entirely and `filter_output` projects the return value onto the remaining `success` shape, stripping `email`/`phone` before serialization even if a handler bug let them through. The variant is listed **first** because `success` and `pii_success` share the same top-level keys: when both are visible (a `view_pii` user), the gem breaks the tie by source order, so the richer PII shape must come first or it gets projected away. Pagination is bounded by `@max(100)` so the LLM can't ask for a million rows.
 
 **Variant: a second database or raw SQL.** Reading from an analytics replica or a non-AR datastore? Borrow a pooled connection and sanitize explicitly — never string-build with LLM input:
 
