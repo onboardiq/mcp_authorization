@@ -4,6 +4,7 @@
 # stdlib type signatures, ...) we never touch — ~15 MB RSS vs ~1.2 MB for
 # the subset below. Load order matters: location_aux uses the C-defined
 # RBS::Location, and rbs_extension assumes RBS::AST::* namespaces exist.
+require "pathname" # rbs 4.x's parser_aux references Pathname at load time
 require "rbs/version"
 require "rbs/errors"
 require "rbs/buffer"
@@ -17,6 +18,23 @@ require "rbs/ast/declarations"
 require "rbs/ast/members"
 require "rbs/ast/annotation"
 require "rbs/ast/comment"
+# rbs 4.x's C extension (rbs_extension) references the RBS::AST::Ruby::*
+# namespace, which did not exist on rbs 3.x. Require those files when the
+# installed rbs ships them so the narrow load path stays correct across
+# the gemspec's supported range (rbs >= 3.0); ignore on versions that
+# predate the namespace, where rbs_extension does not need it.
+%w[
+  rbs/ast/ruby/helpers/constant_helper
+  rbs/ast/ruby/helpers/location_helper
+  rbs/ast/ruby/annotations
+  rbs/ast/ruby/comment_block
+  rbs/ast/ruby/declarations
+  rbs/ast/ruby/members
+].each do |feature|
+  require feature
+rescue LoadError
+  # rbs < 4: file absent and rbs_extension does not reference it.
+end
 require "rbs_extension"
 require "rbs/location_aux"
 require "rbs/parser_aux"
@@ -79,12 +97,13 @@ module McpAuthorization
       #: (untyped, server_context: untyped) -> Hash[Symbol, untyped]
       def compile_input(handler_class, server_context:)
         cached = cache_for(handler_class)
+        rctx = build_rctx(server_context, cached)
 
         schema = if cached[:raw_input]&.dig(:kind) == :record
-          compile_tagged_record(cached[:raw_input][:body], cached[:type_map], server_context, source_file: cached[:source_file])
+          compile_tagged_record(cached[:raw_input][:body], cached[:type_map], server_context, source_file: cached[:source_file], rctx: rctx)
         else
           build_input_schema(
-            filter_call_signature(cached[:call_params], cached[:type_map], server_context)
+            filter_call_signature(cached[:call_params], cached[:type_map], server_context, rctx: rctx)
           )
         end
 
@@ -100,7 +119,7 @@ module McpAuthorization
         cached = cache_for(handler_class)
 
         if cached[:raw_output]&.dig(:kind) == :union
-          schema = compile_tagged_union(cached[:raw_output][:body], cached[:type_map], server_context)
+          schema = compile_tagged_union(cached[:raw_output][:body], cached[:type_map], server_context, rctx: build_rctx(server_context, cached))
           schema = with_ref_injection(schema, cached[:type_map])
           return McpAuthorization.config.strict_schema ? strict_sanitize(schema) : schema
         end
@@ -227,12 +246,13 @@ module McpAuthorization
       #: (untyped, server_context: untyped) -> Hash[Symbol, untyped]
       def compile_input_for_filter(handler_class, server_context:)
         cached = cache_for(handler_class)
+        rctx = build_rctx(server_context, cached)
 
         schema = if cached[:raw_input]&.dig(:kind) == :record
-          compile_tagged_record(cached[:raw_input][:body], cached[:type_map], server_context, source_file: cached[:source_file])
+          compile_tagged_record(cached[:raw_input][:body], cached[:type_map], server_context, source_file: cached[:source_file], rctx: rctx)
         else
           build_input_schema(
-            filter_call_signature(cached[:call_params], cached[:type_map], server_context)
+            filter_call_signature(cached[:call_params], cached[:type_map], server_context, rctx: rctx)
           )
         end
 
@@ -246,7 +266,7 @@ module McpAuthorization
         cached = cache_for(handler_class)
         return nil unless cached[:raw_output]&.dig(:kind) == :union
 
-        schema = compile_tagged_union(cached[:raw_output][:body], cached[:type_map], server_context)
+        schema = compile_tagged_union(cached[:raw_output][:body], cached[:type_map], server_context, rctx: build_rctx(server_context, cached))
         with_ref_injection(schema, cached[:type_map])
       end
 
@@ -290,19 +310,40 @@ module McpAuthorization
 
         variants = schema[:oneOf] || schema[:anyOf]
         if variants.is_a?(Array) && !variants.empty?
-          resolved = variants.map { |v| resolve_ref(v, defs) }
+          # Flatten so intersection (allOf) members project like the object
+          # they describe — their discriminator const and merged fields live
+          # across the allOf branches.
+          resolved = variants.map { |v| flatten_all_of(v, defs) }
           best = best_variant_for(value, resolved)
           return best ? project_against_schema(value, best, defs) : value
         end
+
+        # A bare intersection (allOf) — merge its branches and project.
+        return project_against_schema(value, flatten_all_of(schema, defs), defs) if schema[:allOf].is_a?(Array)
 
         case schema[:type]
         when "object"
           return value unless value.is_a?(Hash)
           props = schema[:properties] || {}
+          # additionalProperties governs keys with no declared property.
+          # Absent (nil) keeps the closed-by-default projection that drops
+          # undeclared keys — the enforcement that hides @requires-gated
+          # fields. An explicit non-false value (a schema or true) means the
+          # author opted the value open (e.g. Hash[K, untyped] compiles to
+          # additionalProperties: {}), so unknown keys are preserved and
+          # projected against that schema rather than stripped (issue #22).
+          addl = schema[:additionalProperties]
           value.each_with_object({}) do |(k, v), acc|
             prop_schema = props[k.to_sym] || props[k.to_s] || props[k]
-            next unless prop_schema
-            acc[k] = project_against_schema(v, prop_schema, defs)
+            if prop_schema
+              acc[k] = project_against_schema(v, prop_schema, defs)
+            elsif addl == false || addl.nil?
+              next
+            elsif addl.is_a?(Hash) && !addl.empty?
+              acc[k] = project_against_schema(v, addl, defs)
+            else
+              acc[k] = v
+            end
           end
         when "array"
           return value unless value.is_a?(Array)
@@ -315,7 +356,14 @@ module McpAuthorization
 
       # Choose the best-matching variant of a union for a given value.
       #
-      # Scoring: count how many of the value's keys appear in the variant's
+      # Discriminated unions come first: if a variant pins a property to a
+      # +const+ (e.g. +type: "SchedulerStage"+) and the value carries that key
+      # with a different value, the variant is disqualified outright. This makes
+      # tagged unions project onto the exact matching member instead of the one
+      # with the most incidental field overlap — and lets a value whose tag
+      # matches no variant fall through to the defensive pass-through below.
+      #
+      # Otherwise: count how many of the value's keys appear in the variant's
       # +properties+, minus how many are unknown. Disqualify variants missing
       # any of the value's keys from their +required+ list that isn't present.
       # Returns nil if no variant can accommodate the value — in which case
@@ -324,14 +372,15 @@ module McpAuthorization
       def best_variant_for(value, variants)
         return variants.first unless value.is_a?(Hash)
 
+        value_keys = value.keys.map(&:to_s)
         scored = variants.filter_map do |variant|
           next unless variant.is_a?(Hash) && variant[:type] == "object"
           props = variant[:properties] || {}
           prop_keys = props.keys.map(&:to_s)
-          value_keys = value.keys.map(&:to_s)
           required = (variant[:required] || []).map(&:to_s)
 
           next if (required - value_keys).any?
+          next if const_discriminator_mismatch?(value, props)
 
           known = (value_keys & prop_keys).size
           unknown = (value_keys - prop_keys).size
@@ -340,6 +389,53 @@ module McpAuthorization
 
         return nil if scored.empty?
         scored.max_by { |score, _| score }&.last
+      end
+
+      # Merge an +allOf+ (intersection) schema into a single object schema by
+      # unioning the +properties+/+required+ of every branch (each resolved
+      # through +$ref+). Non-intersection schemas are returned resolved and
+      # unchanged. This lets the union projection treat +allOf: [{$ref base},
+      # {own fields}]+ — the shape produced by a +base & { ... }+ contract —
+      # as the flat record it logically is, so the discriminator const and the
+      # merged field set are visible to +best_variant_for+ and projection.
+      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> untyped
+      def flatten_all_of(schema, defs)
+        schema = resolve_ref(schema, defs)
+        return schema unless schema.is_a?(Hash) && schema[:allOf].is_a?(Array)
+
+        props = {}
+        required = [] #: Array[untyped]
+        additional = nil
+        schema[:allOf].each do |branch|
+          b = flatten_all_of(branch, defs)
+          next unless b.is_a?(Hash)
+          props.merge!(b[:properties]) if b[:properties].is_a?(Hash)
+          required.concat(Array(b[:required]))
+          additional = b[:additionalProperties] if b.key?(:additionalProperties)
+        end
+
+        merged = { type: "object", properties: props } #: Hash[Symbol, untyped]
+        merged[:required] = required.uniq unless required.empty?
+        merged[:additionalProperties] = additional unless additional.nil?
+        # Preserve any sibling keys set alongside allOf (rare, defensive).
+        schema.each { |k, v| merged[k] ||= v unless k == :allOf }
+        merged
+      end
+
+      # True when +value+ carries a key that +props+ pins to a +const+ but with
+      # a different value — i.e. a discriminated-union tag mismatch. Keys absent
+      # from the value never disqualify (that's a +required+ concern).
+      #: (Hash[untyped, untyped], Hash[untyped, untyped]) -> bool
+      def const_discriminator_mismatch?(value, props)
+        props.any? do |key, schema|
+          next false unless schema.is_a?(Hash) && schema.key?(:const)
+
+          present = value.key?(key.to_sym) || value.key?(key.to_s)
+          next false unless present
+
+          actual = value.key?(key.to_sym) ? value[key.to_sym] : value[key.to_s]
+          actual.to_s != schema[:const].to_s
+        end
       end
 
       # ---------------------------------------------------------------
@@ -804,23 +900,78 @@ module McpAuthorization
         source_file = find_source_file(handler_class)
         content = source_file && File.exist?(source_file) ? File.read(source_file) : ""
 
-        # Build type map: shared imports first, then handler's own types override
-        imported = load_imports(content)
-        local = parse_type_aliases(content, source_file: source_file)
-        type_map = imported.merge(local)
+        # Build type map: collect the *raw* (unresolved) aliases from every
+        # imported shared file plus the handler's own inline `# @rbs type`
+        # definitions, merge them (local overrides imported), then resolve the
+        # whole set together. Resolving as one set — rather than per file — is
+        # what lets a shared type reference a type defined in another imported
+        # file (e.g. a per-stage contract referencing a shared `move_rule`).
+        raw_aliases = load_import_aliases(content).merge(collect_inline_aliases(content))
+        type_map = resolve_collected_aliases(raw_aliases, source_file: source_file)
+
+        # Retain the un-stripped record bodies (tags intact) so nested
+        # record aliases can be recompiled per request with predicate
+        # filtering — see resolve_named_type / build_rctx (issue #23).
+        # Local definitions override imported ones, matching type_map.
+        raw_record_bodies = load_import_raw_bodies(content).merge(collect_inline_record_bodies(content))
 
         {
           type_map: type_map,
           raw_input: find_raw_type_body(content, "input"),
           raw_output: find_raw_type_body(content, "output"),
           call_params: parse_call_params(content, source_file: source_file),
-          source_file: source_file
+          source_file: source_file,
+          raw_record_bodies: raw_record_bodies
         }
       end
 
       # ---------------------------------------------------------------
       # Predicate filtering — the per-request compile phase
       # ---------------------------------------------------------------
+
+      # Build the per-request resolution context threaded through the type
+      # visitor so that predicate filtering (+@requires+, +@feature+, ...)
+      # recurses into nested record-type aliases — not just the top-level
+      # fields (issue #23).
+      #
+      # +:raw_bodies+ holds the *un-stripped* record body for each named
+      # record alias (tags intact), so a referenced alias can be recompiled
+      # per request against +server_context+ via +compile_tagged_record+
+      # rather than served from the statically-resolved +type_map+ (which
+      # has already discarded its predicate tags). +:visiting+ tracks alias
+      # names currently being expanded so a self- or mutually-recursive type
+      # falls back to the static schema instead of looping forever.
+      #
+      #: (untyped, Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
+      def build_rctx(server_context, cached)
+        {
+          server_context: server_context,
+          raw_bodies: cached[:raw_record_bodies] || {},
+          source_file: cached[:source_file],
+          visiting: []
+        }
+      end
+
+      # Resolve a named type reference during per-request compilation.
+      #
+      # If the name maps to a record alias whose raw body we retained, the
+      # alias is recompiled with +compile_tagged_record+ so its own
+      # predicate-gated fields are filtered against this request's
+      # +server_context+ — making gating work at any nesting depth. A name
+      # already on the +visiting+ stack (recursive type) or absent from
+      # +raw_bodies+ falls back to the statically-resolved +type_map+ entry,
+      # then to +fallback+.
+      #
+      #: (String, Hash[String, Hash[Symbol, untyped]], Hash[Symbol, untyped]?, Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
+      def resolve_named_type(name, type_map, rctx, fallback)
+        raw = rctx && rctx[:raw_bodies] && rctx[:raw_bodies][name]
+        if raw && !rctx[:visiting].include?(name)
+          child = rctx.merge(visiting: rctx[:visiting] + [name])
+          compile_tagged_record(raw, type_map, rctx[:server_context], source_file: rctx[:source_file], rctx: child)
+        else
+          type_map[name] || fallback
+        end
+      end
 
       # Returns true if any predicate tag on a field/variant evaluates to
       # false, meaning the field should be excluded from the schema.
@@ -886,20 +1037,45 @@ module McpAuthorization
       # @param type_map [Hash] Resolved type definitions for +$ref+ lookups.
       # @param server_context [Object] Per-request context.
       # @return [Hash] JSON Schema object with +properties+, +required+, etc.
-      #: (String, Hash[String, Hash[Symbol, untyped]], untyped, ?source_file: String?) -> Hash[Symbol, untyped]
-      def compile_tagged_record(raw_body, type_map, server_context, source_file: nil)
+      #: (String, Hash[String, Hash[Symbol, untyped]], untyped, ?source_file: String?, ?rctx: Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+      def compile_tagged_record(raw_body, type_map, server_context, source_file: nil, rctx: nil)
+        rctx ||= { server_context: server_context, raw_bodies: {}, source_file: source_file, visiting: [] }
         properties = {}
         required = []
         dependent_required = {}
 
         each_field_in_record(raw_body) do |key, type_str|
+          # A union field whose members carry their own predicate tags (e.g.
+          # account-gated variants: `stage: a @feature(x) | b @feature(y)`)
+          # routes through compile_tagged_union so each member is filtered per
+          # request. The normal path's field-level extract_tags would otherwise
+          # bind a member's tag to the whole field. Only triggers when the field
+          # is a multi-member union AND carries a tag, so untagged union fields
+          # keep the full RBS-library path (which handles inline records, etc.).
+          if tagged_union_field?(type_str)
+            clean_key, optional = parse_field_name(key, source_file: source_file)
+            properties[clean_key.to_sym] = compile_tagged_union(type_str, type_map, server_context, rctx: rctx)
+            required << clean_key unless optional
+            next
+          end
+
+          # Array of a tagged union — `items: Array[a @feature(x) | b @feature(y)]`.
+          # The union's `|` is at bracket depth 1, so tagged_union_field? misses
+          # it; gate the element union and wrap it back in an array schema.
+          if (inner = tagged_array_union_inner(type_str))
+            clean_key, optional = parse_field_name(key, source_file: source_file)
+            properties[clean_key.to_sym] = { type: "array", items: compile_tagged_union(inner, type_map, server_context, rctx: rctx) }
+            required << clean_key unless optional
+            next
+          end
+
           type_str, tags = extract_tags(type_str)
 
           next if predicate_excluded?(tags, server_context)
 
           clean_key, optional = parse_field_name(key, source_file: source_file)
 
-          schema = rbs_type_to_json_schema(type_str, type_map, source_file: source_file)
+          schema = rbs_type_to_json_schema(type_str, type_map, source_file: source_file, rctx: rctx)
           properties[clean_key.to_sym] = apply_tags(schema, tags, server_context: server_context)
           required << clean_key unless optional
 
@@ -915,6 +1091,29 @@ module McpAuthorization
         schema
       end
 
+      # True when a record field's type is a multi-member union that carries a
+      # predicate tag — i.e. per-member gating is intended. A `|` at bracket
+      # depth 0 marks a real union (not one inside a nested generic/record).
+      #: (String) -> bool
+      def tagged_union_field?(type_str)
+        return false unless type_str.include?("@")
+        split_at_depth_zero(type_str, "|").size > 1
+      end
+
+      # If a field type is +Array[<multi-member tagged union>]+, return the inner
+      # union expression so its members can be gated per request; else nil. The
+      # union lives inside the +[]+ (bracket depth 1), so tagged_union_field?
+      # (which only sees depth 0) does not match it.
+      #: (String) -> String?
+      def tagged_array_union_inner(type_str)
+        return nil unless type_str.include?("@")
+        m = type_str.strip.match(/\AArray\[(.+)\]\z/m)
+        return nil unless m
+
+        inner = m[1].to_s
+        split_at_depth_zero(inner, "|").size > 1 ? inner : nil
+      end
+
       # Compile a union-style output type (+# @rbs type output = success | admin_detail @requires(:admin)+)
       # with variant-level predicate filtering.
       #
@@ -927,14 +1126,15 @@ module McpAuthorization
       # @param type_map [Hash] Resolved type definitions.
       # @param server_context [Object] Per-request context.
       # @return [Hash] JSON Schema — either a single schema or a +oneOf+ wrapper.
-      #: (String, Hash[String, Hash[Symbol, untyped]], untyped) -> Hash[Symbol, untyped]
-      def compile_tagged_union(raw_expr, type_map, server_context)
+      #: (String, Hash[String, Hash[Symbol, untyped]], untyped, ?rctx: Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+      def compile_tagged_union(raw_expr, type_map, server_context, rctx: nil)
+        rctx ||= { server_context: server_context, raw_bodies: {}, source_file: nil, visiting: [] }
         parts = split_at_depth_zero(raw_expr, "|").map(&:strip).reject(&:empty?)
 
         filtered = parts.filter_map do |part|
           part, tags = extract_tags(part)
           next nil if predicate_excluded?(tags, server_context)
-          resolve_type(part, type_map)
+          resolve_type(part, type_map, rctx)
         end
 
         case filtered.size
@@ -953,8 +1153,9 @@ module McpAuthorization
       # @param type_map [Hash] Resolved type definitions.
       # @param server_context [Object] Per-request context.
       # @return [Hash] Partial JSON Schema (+properties+, +required+, etc.).
-      #: (Array[Hash[Symbol, untyped]], Hash[String, Hash[Symbol, untyped]], untyped) -> Hash[Symbol, untyped]
-      def filter_call_signature(call_params, type_map, server_context)
+      #: (Array[Hash[Symbol, untyped]], Hash[String, Hash[Symbol, untyped]], untyped, ?rctx: Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+      def filter_call_signature(call_params, type_map, server_context, rctx: nil)
+        rctx ||= { server_context: server_context, raw_bodies: {}, source_file: nil, visiting: [] }
         properties = {}
         required = []
         dependent_required = {}
@@ -962,7 +1163,7 @@ module McpAuthorization
         call_params.each do |param|
           next if predicate_excluded?(param[:tags], server_context)
 
-          schema = rbs_type_to_json_schema(param[:type], type_map)
+          schema = rbs_type_to_json_schema(param[:type], type_map, rctx: rctx)
           properties[param[:name].to_sym] = apply_tags(schema, param[:tags], server_context: server_context)
           required << param[:name] if param[:required]
 
@@ -1010,6 +1211,27 @@ module McpAuthorization
         type_map
       end
 
+      # Like +load_imports+, but returns the raw record bodies (tags
+      # intact) from each imported +.rbs+ file so a predicate-gated field
+      # inside a shared type is filtered per request — see +build_rctx+
+      # (issue #23). Without this, gates authored in +sig/shared/*.rbs+
+      # would parse but never fire.
+      #: (String) -> Hash[String, String]
+      def load_import_raw_bodies(content)
+        return {} if content.empty?
+
+        imports = content.scan(/# @rbs import (\S+)/).flatten
+        return {} if imports.empty?
+
+        raw = {}
+        imports.each do |import_path|
+          rbs_file = resolve_import_path(import_path)
+          next unless rbs_file && File.exist?(rbs_file)
+          raw.merge!(cached_rbs_record_bodies(rbs_file))
+        end
+        raw
+      end
+
       # Parse a shared +.rbs+ file with mtime-based caching. If the file
       # hasn't changed since the last parse, the cached result is returned.
       #
@@ -1017,16 +1239,62 @@ module McpAuthorization
       # @return [Hash{String => Hash}] Type name → JSON Schema map.
       #: (String) -> Hash[String, Hash[Symbol, untyped]]
       def cached_parse_rbs_file(path)
+        cached_rbs_entry(path)[:result]
+      end
+
+      # The raw record-body subset of a shared +.rbs+ file's aliases:
+      # name → raw +"{ ... }"+ body string (tags intact). Shares the
+      # mtime-keyed +shared_type_cache+ entry with +cached_parse_rbs_file+
+      # so a file is read and parsed at most once per mtime.
+      #: (String) -> Hash[String, String]
+      def cached_rbs_record_bodies(path)
+        cached_rbs_entry(path)[:raw_record_bodies]
+      end
+
+      # Build (or fetch) the mtime-keyed cache entry for a shared +.rbs+
+      # file, holding both the resolved type map (+:result+) and the raw
+      # record bodies (+:raw_record_bodies+).
+      #: (String) -> Hash[Symbol, untyped]
+      def cached_rbs_entry(path)
         mtime = File.mtime(path)
         cached = shared_type_cache[path]
+        return cached if cached && cached[:mtime] == mtime
 
-        if cached && cached[:mtime] == mtime
-          return cached[:result]
+        aliases = collect_rbs_file_aliases(File.read(path))
+        entry = {
+          mtime: mtime,
+          result: resolve_collected_aliases(aliases, source_file: path),
+          raw_record_bodies: aliases.select { |_, v| v.is_a?(String) },
+          raw_aliases: aliases
+        }
+        shared_type_cache[path] = entry
+      end
+
+      # The raw (unresolved) alias map of a shared +.rbs+ file — both record
+      # bodies (String) and pre-resolved string-union schemas. Used to resolve
+      # imports as one merged set so cross-file references resolve.
+      #: (String) -> Hash[String, untyped]
+      def cached_rbs_aliases(path)
+        cached_rbs_entry(path)[:raw_aliases]
+      end
+
+      # Merge the raw aliases from every +# @rbs import+ed file in +content+.
+      # Returned unresolved so the caller can resolve imports + local aliases
+      # together (cross-file references resolve; see build_cache).
+      #: (String) -> Hash[String, untyped]
+      def load_import_aliases(content)
+        return {} if content.empty?
+
+        imports = content.scan(/# @rbs import (\S+)/).flatten
+        return {} if imports.empty?
+
+        raw = {}
+        imports.each do |import_path|
+          rbs_file = resolve_import_path(import_path)
+          next unless rbs_file && File.exist?(rbs_file)
+          raw.merge!(cached_rbs_aliases(rbs_file))
         end
-
-        result = parse_rbs_file(path)
-        shared_type_cache[path] = { mtime: mtime, result: result }
-        result
+        raw
       end
 
       # Resolve a bare import name (e.g. +"common_types"+) to an absolute
@@ -1036,11 +1304,16 @@ module McpAuthorization
       # @return [String, nil] Absolute file path, or nil if not found.
       #: (String) -> String?
       def resolve_import_path(import_path)
-        return nil unless defined?(Rails)
-
         McpAuthorization.config.shared_type_paths.each do |base|
-          candidate = Rails.root.join(base, "#{import_path}.rbs")
-          return candidate.to_s if File.exist?(candidate)
+          candidate =
+            if base.to_s.start_with?(File::SEPARATOR) # absolute base (tests / non-Rails hosts)
+              File.join(base.to_s, "#{import_path}.rbs")
+            elsif defined?(Rails)
+              Rails.root.join(base, "#{import_path}.rbs").to_s
+            else                                       # relative base, no Rails → resolve from CWD
+              File.join(Dir.pwd, base.to_s, "#{import_path}.rbs")
+            end
+          return candidate if File.exist?(candidate)
         end
         nil
       end
@@ -1062,38 +1335,49 @@ module McpAuthorization
       # @return [Hash{String => Hash}] Type name → resolved JSON Schema.
       #: (String) -> Hash[String, Hash[Symbol, untyped]]
       def parse_rbs_file(path)
-        content = File.read(path)
+        resolve_collected_aliases(collect_rbs_file_aliases(File.read(path)), source_file: path)
+      end
+
+      # Collect the +type X = ...+ aliases from a bare +.rbs+ file (no +#+
+      # comment markers) into a name → raw value map, mirroring
+      # +collect_inline_aliases+ for the shared-types format. Record bodies
+      # stay raw (tags intact); string-literal unions resolve eagerly.
+      #: (String) -> Hash[String, untyped]
+      def collect_rbs_file_aliases(content)
         aliases = {}
         current_name = nil #: String?
+        current_base = nil #: String?
         current_body = +""
 
         content.each_line do |line|
           stripped = line.strip
 
-          if stripped =~ /\Atype (\w+) = \{/
+          if stripped =~ /\Atype (\w+) = (\w+) & \{/
+            # Intersection: a base alias merged with an inline record, e.g.
+            #   type scheduler_stage = stage_common & { type: "SchedulerStage", ... }
+            # Captured as {intersection: [base, body]} and resolved to an
+            # allOf so the shared base hoists into $defs once (token dedup).
             current_name = $1.to_s
+            current_base = $2.to_s
+            current_body = "{"
+          elsif stripped =~ /\Atype (\w+) = \{/
+            current_name = $1.to_s
+            current_base = nil
             current_body = "{"
           elsif stripped =~ /\Atype (\w+) = "([^"]+)"/
             aliases[$1.to_s] = parse_rbs_string_union($2.to_s, line, content)
           elsif current_name
-            current_body << stripped
+            current_body << strip_rbs_comment(stripped)
             if brace_balanced?(current_body)
-              aliases[current_name] = current_body
+              aliases[current_name] = current_base ? { intersection: [current_base, current_body] } : current_body
               current_name = nil
+              current_base = nil
               current_body = +""
             end
           end
         end
 
-        resolved = {}
-        aliases.each do |name, value|
-          resolved[name] = if value.is_a?(String)
-            parse_record_type(value, resolved.merge(aliases_to_schemas(aliases, resolved)), source_file: path)
-          else
-            value
-          end
-        end
-        resolved
+        aliases
       end
 
       # Parse a multi-line string literal union from an .rbs file:
@@ -1138,7 +1422,7 @@ module McpAuthorization
           if line =~ /# @rbs type #{pattern} = \{/
             body = "{"
             rest.each do |next_line|
-              stripped = next_line.strip.sub(/^#\s*/, "")
+              stripped = strip_rbs_comment(next_line.strip.sub(/^#\s*/, ""))
               body << stripped
               return { kind: :record, body: body } if brace_balanced?(body)
             end
@@ -1175,7 +1459,18 @@ module McpAuthorization
       #: (String, ?source_file: String?) -> Hash[String, Hash[Symbol, untyped]]
       def parse_type_aliases(content, source_file: nil)
         return {} if content.empty?
+        resolve_collected_aliases(collect_inline_aliases(content), source_file: source_file)
+      end
 
+      # Collect the +# @rbs type+ aliases declared in handler source into a
+      # map of name → raw value: record types stay as their un-resolved
+      # body string (+"{ ... }"+, tags intact); string-literal unions are
+      # resolved eagerly to +{type: "string", enum: [...]}+ since they
+      # carry no per-request predicates. Shared between +parse_type_aliases+
+      # (which resolves the bodies) and +collect_inline_record_bodies+
+      # (which keeps them raw for nested per-request filtering).
+      #: (String) -> Hash[String, untyped]
+      def collect_inline_aliases(content)
         aliases = {}
         current_name = nil #: String?
         current_body = +""
@@ -1187,7 +1482,7 @@ module McpAuthorization
           elsif line =~ /# @rbs type (\w+) = "([^"]+)"/
             aliases[$1.to_s] = parse_string_union($2.to_s, line, content)
           elsif current_name
-            stripped = line.strip.sub(/^#\s*/, "")
+            stripped = strip_rbs_comment(line.strip.sub(/^#\s*/, ""))
             current_body << stripped
             if brace_balanced?(current_body)
               aliases[current_name] = current_body
@@ -1197,14 +1492,48 @@ module McpAuthorization
           end
         end
 
+        aliases
+      end
+
+      # The record-body subset of +collect_inline_aliases+: name → raw
+      # +"{ ... }"+ body string for each handler-local record alias.
+      #: (String) -> Hash[String, String]
+      def collect_inline_record_bodies(content)
+        return {} if content.empty?
+        collect_inline_aliases(content).select { |_, v| v.is_a?(String) }
+      end
+
+      # Resolve a collected alias map (name → raw record body | resolved
+      # Hash) into a name → JSON Schema type map. Forward references resolve
+      # via +aliases_to_schemas+ placeholders.
+      #: (Hash[String, untyped], ?source_file: String?) -> Hash[String, Hash[Symbol, untyped]]
+      def resolve_collected_aliases(aliases, source_file: nil)
         resolved = {}
+
+        # Pass 1: plain record bodies and already-resolved values (string
+        # unions). Intersection bases are plain records, so this guarantees a
+        # base is fully resolved before any intersection that references it.
         aliases.each do |name, value|
+          next if value.is_a?(Hash) && value[:intersection]
           resolved[name] = if value.is_a?(String)
             parse_record_type(value, resolved.merge(aliases_to_schemas(aliases, resolved)), source_file: source_file)
           else
             value
           end
         end
+
+        # Pass 2: intersections → allOf[base, record]. The base schema is the
+        # fully-resolved shared type (same object across every member), so
+        # with_ref_injection sees it used many times and hoists it into $defs.
+        aliases.each do |name, value|
+          next unless value.is_a?(Hash) && value[:intersection]
+          base_name, body = value[:intersection]
+          merged = resolved.merge(aliases_to_schemas(aliases, resolved))
+          base_schema = resolved[base_name] || merged[base_name] || { type: "object" }
+          record_schema = parse_record_type(body, merged, source_file: source_file)
+          resolved[name] = { allOf: [base_schema, record_schema] }
+        end
+
         resolved
       end
 
@@ -1324,6 +1653,42 @@ module McpAuthorization
       # which silently dropped any field whose type string contained a
       # comma — or worse, split that field at the comma.
       #
+      # Strip an RBS line comment (+#+ to end-of-line) from a single line.
+      #
+      # RBS treats +#+ as a comment marker everywhere outside string
+      # literals — the official lexer discards it before parsing. The
+      # line-based readers here (+find_raw_type_body+, +parse_type_aliases+,
+      # +parse_rbs_file+) concatenate record-body lines *without* a newline
+      # separator, so a comment authored inside a record body
+      # (+{ # note\n id: String }+) would otherwise fold into the next
+      # field name and blow up +parse_field_name+ (issue #20).
+      #
+      # We scan character by character so a +#+ inside a string literal or
+      # inside a bracketed annotation value (e.g. +@desc(a # b)+) is left
+      # untouched; only a +#+ at bracket depth 0 outside any string starts
+      # a comment.
+      #: (String) -> String
+      def strip_rbs_comment(line)
+        depth = 0
+        in_string = nil #: String?
+
+        line.each_char.with_index do |ch, i|
+          if in_string
+            in_string = nil if ch == in_string
+          elsif ch == '"' || ch == "'"
+            in_string = ch
+          elsif ch == "(" || ch == "[" || ch == "{"
+            depth += 1
+          elsif ch == ")" || ch == "]" || ch == "}"
+            depth -= 1
+          elsif ch == "#" && depth <= 0
+            return line[0...i].to_s.rstrip
+          end
+        end
+
+        line
+      end
+
       #: (String) { (String, String) -> void } -> void
       def each_field_in_record(body)
         inner = body.strip.sub(/\A\{/, "").sub(/\}\z/, "").strip
@@ -1357,8 +1722,8 @@ module McpAuthorization
       # @param rbs_type [String] RBS type expression.
       # @param type_map [Hash] Resolved type definitions for named type lookups.
       # @return [Hash] JSON Schema hash.
-      #: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?) -> Hash[Symbol, untyped]
-      def rbs_type_to_json_schema(rbs_type, type_map = {}, source_file: nil)
+      #: (String, ?Hash[String, Hash[Symbol, untyped]], ?source_file: String?, ?rctx: Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+      def rbs_type_to_json_schema(rbs_type, type_map = {}, source_file: nil, rctx: nil)
         stripped = rbs_type.strip
         return { type: "string" } if stripped.empty?
 
@@ -1375,7 +1740,7 @@ module McpAuthorization
           return type_map[stripped] || { type: "string" }
         end
 
-        visit_rbs_type(ast, type_map)
+        visit_rbs_type(ast, type_map, rctx)
       end
 
       # AST visitor: convert an +RBS::Types::*+ node into JSON Schema.
@@ -1389,34 +1754,44 @@ module McpAuthorization
       # @param node [RBS::Types::t] AST node from +RBS::Parser.parse_type+.
       # @param type_map [Hash] Resolved named-type definitions.
       # @return [Hash] JSON Schema fragment.
-      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
-      def visit_rbs_type(node, type_map)
+      #: (untyped, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+      def visit_rbs_type(node, type_map, rctx = nil)
         case node
         when RBS::Types::Bases::Bool
           { type: "boolean" }
         when RBS::Types::Bases::Any, RBS::Types::Bases::Void, RBS::Types::Bases::Nil
-          # untyped / void / nil → no constraint (LLM can pass anything)
-          { type: "string" }
+          # untyped / void / nil → no constraint (LLM can pass anything).
+          # The empty schema {} is JSON Schema's "any value"; emitting a
+          # concrete type here (e.g. {type: "string"}) silently rejects
+          # objects/arrays at tools/call — see issue #22. In particular
+          # Hash[K, untyped] becomes {type: "object", additionalProperties: {}}
+          # (any property value allowed) rather than forcing string values.
+          {}
         when RBS::Types::Literal
           visit_rbs_literal(node)
         when RBS::Types::Optional
           # Optional wraps a type; nullability is handled at field
           # level (required-set), not in the JSON Schema type itself.
-          visit_rbs_type(node.type, type_map)
+          visit_rbs_type(node.type, type_map, rctx)
         when RBS::Types::Union
-          visit_rbs_union(node, type_map)
+          visit_rbs_union(node, type_map, rctx)
+        when RBS::Types::Intersection
+          # A & B → allOf. Lets a field reuse a shared base type plus extra
+          # constraints; mirrors the alias-level intersection handled by
+          # collect_rbs_file_aliases / resolve_collected_aliases.
+          { allOf: node.types.map { |t| visit_rbs_type(t, type_map, rctx) } }
         when RBS::Types::Record
-          visit_rbs_record(node, type_map)
+          visit_rbs_record(node, type_map, rctx)
         when RBS::Types::Tuple
           # RBS tuples have heterogeneous element types; JSON Schema's
           # closest analog is array with prefixItems, but for simplicity
           # we project to a plain array.
           { type: "array" }
         when RBS::Types::ClassInstance
-          visit_rbs_class_instance(node, type_map)
+          visit_rbs_class_instance(node, type_map, rctx)
         when RBS::Types::Alias
           name = node.name.to_s.sub(/\A::/, "")
-          type_map[name] || { type: "string" }
+          resolve_named_type(name, type_map, rctx, { type: "string" })
         else
           # Interface, Proc, Variable, ClassSingleton, Bases::Self/Class/Instance/Top/Bottom etc.
           { type: "string" }
@@ -1427,8 +1802,8 @@ module McpAuthorization
       # Ruby primitives we care about (+String+, +Integer+, +Float+),
       # generic +Array[T]+ / +Hash[K, V]+, and falls back to the
       # +type_map+ for user-defined names.
-      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
-      def visit_rbs_class_instance(node, type_map)
+      #: (untyped, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+      def visit_rbs_class_instance(node, type_map, rctx = nil)
         name = node.name.to_s.sub(/\A::/, "")
         case name
         when "String"
@@ -1443,17 +1818,17 @@ module McpAuthorization
           { type: "boolean", const: false }
         when "Array"
           inner = node.args.first
-          inner ? { type: "array", items: visit_rbs_type(inner, type_map) } : { type: "array" }
+          inner ? { type: "array", items: visit_rbs_type(inner, type_map, rctx) } : { type: "array" }
         when "Hash"
           # Hash[K, V] — JSON Schema can express V as additionalProperties.
           val = node.args[1]
-          val ? { type: "object", additionalProperties: visit_rbs_type(val, type_map) } : { type: "object" }
+          val ? { type: "object", additionalProperties: visit_rbs_type(val, type_map, rctx) } : { type: "object" }
         when "Symbol"
           { type: "string" }
         when "NilClass"
           { type: "string" }
         else
-          type_map[name] || { type: "string" }
+          resolve_named_type(name, type_map, rctx, { type: "string" })
         end
       end
 
@@ -1476,8 +1851,8 @@ module McpAuthorization
       # literals becomes a +{type: "string", enum: [...]}+; any other
       # mix becomes +{oneOf: [...]}+. This mirrors the prior regex
       # parser's behavior so existing schemas don't drift.
-      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
-      def visit_rbs_union(node, type_map)
+      #: (untyped, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+      def visit_rbs_union(node, type_map, rctx = nil)
         types = node.types
 
         # All string literals → enum.
@@ -1493,7 +1868,7 @@ module McpAuthorization
           return { type: "boolean" }
         end
 
-        { oneOf: types.map { |t| visit_rbs_type(t, type_map) } }
+        { oneOf: types.map { |t| visit_rbs_type(t, type_map, rctx) } }
       end
 
       # Map +RBS::Types::Record+ to a JSON Schema object. RBS handles
@@ -1506,18 +1881,18 @@ module McpAuthorization
       # records reached via +# @rbs type input = { ... }+ go through
       # +compile_tagged_record+ instead so per-field tag extraction can
       # happen before the type is parsed.
-      #: (untyped, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
-      def visit_rbs_record(node, type_map)
+      #: (untyped, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+      def visit_rbs_record(node, type_map, rctx = nil)
         properties = {}
         required = []
 
         node.fields.each do |name, type|
           key = name.to_s
-          properties[key.to_sym] = visit_rbs_type(type, type_map)
+          properties[key.to_sym] = visit_rbs_type(type, type_map, rctx)
           required << key
         end
         node.optional_fields.each do |name, type|
-          properties[name.to_s.to_sym] = visit_rbs_type(type, type_map)
+          properties[name.to_s.to_sym] = visit_rbs_type(type, type_map, rctx)
         end
 
         schema = { type: "object", properties: properties } #: Hash[Symbol, untyped]
@@ -1527,9 +1902,9 @@ module McpAuthorization
 
       # Look up a named type in the type map. Returns a bare +{type: "object"}+
       # if the name is not found (defensive fallback).
-      #: (String, Hash[String, Hash[Symbol, untyped]]) -> Hash[Symbol, untyped]
-      def resolve_type(name, type_map)
-        type_map[name] || { type: "object" }
+      #: (String, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+      def resolve_type(name, type_map, rctx = nil)
+        resolve_named_type(name, type_map, rctx, { type: "object" })
       end
 
       # Wrap a partial schema (with +properties+, +required+, etc.) in a
@@ -1632,12 +2007,66 @@ module McpAuthorization
         multi = usage.select { |_, c| c > 1 }
         return schema if multi.empty?
 
-        defs = {}
-        multi.each_key { |name| defs[name] = type_schemas[name] }
-
         replaced = deep_replace(schema, multi, type_schemas)
-        replaced[:"$defs"] = defs
+
+        # Ref-inject *within* each hoisted def too: a def's body may itself
+        # contain another multi-use type (e.g. a shared base that inlines a
+        # template referenced elsewhere). Replace those with $ref — excluding
+        # the def's own name so a body never self-references — so each shared
+        # type is spelled out once in $defs rather than re-inlined inside
+        # another def. Without this, hoisting a large base left the base's
+        # nested types inlined AND duplicated as unreferenced defs.
+        defs = {}
+        multi.each_key do |name|
+          others = multi.reject { |k, _| k == name }
+          defs[name] = deep_replace(type_schemas[name], others, type_schemas)
+        end
+
+        # Drop defs that nothing references (transitively from the main
+        # schema). Hoisting can orphan a type whose every occurrence ended up
+        # inside another def that was itself replaced by a $ref.
+        defs = prune_unreferenced_defs(replaced, defs)
+
+        replaced[:"$defs"] = defs unless defs.empty?
         replaced
+      end
+
+      # Names of +$defs+ reachable (transitively) from +root+. Used to drop
+      # hoisted-but-unreferenced defs.
+      #: (Hash[Symbol, untyped], Hash[String, Hash[Symbol, untyped]]) -> Hash[String, Hash[Symbol, untyped]]
+      def prune_unreferenced_defs(root, defs)
+        reachable = [] #: Array[String]
+        frontier = referenced_def_names(root)
+        until frontier.empty?
+          name = frontier.shift
+          next if reachable.include?(name)
+          reachable << name
+          referenced_def_names(defs[name]).each { |n| frontier << n } if defs[name]
+        end
+        defs.select { |name, _| reachable.include?(name) }
+      end
+
+      # Collect every +#/$defs/<name>+ target referenced anywhere in +node+.
+      #: (untyped) -> Array[String]
+      def referenced_def_names(node)
+        names = [] #: Array[String]
+        stack = [node] #: Array[untyped]
+        until stack.empty?
+          n = stack.pop
+          case n
+          when Hash
+            n.each do |k, v|
+              if (k == :"$ref" || k == "$ref") && v.is_a?(String)
+                names << v.split("/").last.to_s
+              else
+                stack << v
+              end
+            end
+          when Array
+            n.each { |e| stack << e }
+          end
+        end
+        names
       end
 
       # Walk the schema tree and count how many times each named type's
