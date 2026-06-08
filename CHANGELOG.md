@@ -4,6 +4,11 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.6] - 2026-06-08
+
+### Fixed
+- **Single-line and column-aligned `# @rbs type` record aliases are now collected.** A record alias written on one line — `# @rbs type ok = { a: String, b: Integer }` — was silently dropped: `collect_inline_aliases` truncated the body to a bare `{` and only a closing brace on a *following* line ever balanced it. Any union or field referencing such an alias resolved to the `{type: "object"}` fallback (no properties, no per-request gating), so the advertised schema and runtime projection both lost the type's shape. The opening-line body is now captured whole and stored immediately when its braces balance. Relatedly, the alias regex now tolerates arbitrary whitespace around `=`, so column-aligned blocks (`# @rbs type success     = { ... }`) parse instead of being skipped. Multi-line aliases are unaffected.
+
 ## [0.5.5] - 2026-06-04
 
 ### Fixed
