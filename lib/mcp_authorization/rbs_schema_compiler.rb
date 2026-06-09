@@ -1476,10 +1476,22 @@ module McpAuthorization
         current_body = +""
 
         content.each_line do |line|
-          if line =~ /# @rbs type (\w+) = \{/
+          if line =~ /#\s*@rbs type (\w+)\s*=\s*(\{.*)$/
+            # Start of a record alias. Capture the body from the first `{` to
+            # end of line (minus any trailing comment), so a record written on
+            # one line — `# @rbs type ok = { a: String }` — is captured whole
+            # rather than truncated to a bare `{` (which silently dropped the
+            # alias). If the braces already balance it's a single-line record;
+            # otherwise keep accumulating on the following lines. Whitespace
+            # around `=` is tolerated so column-aligned aliases still parse.
             current_name = $1.to_s
-            current_body = "{"
-          elsif line =~ /# @rbs type (\w+) = "([^"]+)"/
+            current_body = +strip_rbs_comment($2.to_s)
+            if brace_balanced?(current_body)
+              aliases[current_name] = current_body
+              current_name = nil
+              current_body = +""
+            end
+          elsif line =~ /#\s*@rbs type (\w+)\s*=\s*"([^"]+)"/
             aliases[$1.to_s] = parse_string_union($2.to_s, line, content)
           elsif current_name
             stripped = strip_rbs_comment(line.strip.sub(/^#\s*/, ""))
