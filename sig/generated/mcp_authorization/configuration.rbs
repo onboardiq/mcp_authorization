@@ -11,6 +11,10 @@ module McpAuthorization
     attr_accessor context_builder: (^(untyped) -> untyped)?
     attr_accessor cli_context_builder: (^(domain: String, role: String) -> untyped)?
     attr_accessor strict_schema: bool
+    attr_accessor tools_list_cache: untyped
+    attr_accessor tools_list_cache_ttl: Integer
+    attr_accessor tools_list_cache_redis: untyped
+    attr_accessor tools_list_cache_redis_url: String?
     def initialize: () -> void
   end
 end

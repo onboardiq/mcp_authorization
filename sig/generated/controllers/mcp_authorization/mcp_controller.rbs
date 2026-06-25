@@ -3,6 +3,15 @@
 module McpAuthorization
   class McpController
     def handle: () -> void
+    def run_transport: (untyped, Array[singleton(MCP::Tool)]) -> [Integer, Hash[String, String], Array[untyped]]
+    def apply_headers: (Hash[String, String]) -> void
+    def render_cached_tools_list: (untyped) -> void
+    def tools_list_envelope: (untyped) -> String
+    def mcp_request_id: () -> untyped
+    def tools_for_request: (untyped) -> Array[singleton(MCP::Tool)]
+    def all_tools: (untyped) -> Array[singleton(MCP::Tool)]
+    def mcp_method: () -> untyped
+    def mcp_request_params: () -> untyped
     def build_server_context: () -> untyped
   end
 end

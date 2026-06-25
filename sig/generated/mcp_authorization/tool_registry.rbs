@@ -8,6 +8,7 @@ module McpAuthorization
     def self.tools_by_domain: () -> Hash[String, Array[singleton(McpAuthorization::Tool)]]
     def self.list_tools: (domain: String, server_context: untyped) -> Array[Hash[Symbol, untyped]]
     def self.tool_classes_for: (domain: String, server_context: untyped) -> Array[singleton(MCP::Tool)]
+    def self.tool_class_for: (domain: String, name: String, server_context: untyped) -> singleton(MCP::Tool)?
     def self.find_tool: (String) -> singleton(McpAuthorization::Tool)?
     def self.reset!: () -> void
   end
