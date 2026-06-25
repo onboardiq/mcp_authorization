@@ -6,6 +6,7 @@ require_relative "mcp_authorization/dsl"
 require_relative "mcp_authorization/rbs_schema_compiler"
 require_relative "mcp_authorization/tool_registry"
 require_relative "mcp_authorization/tool"
+require_relative "mcp_authorization/cache"
 require_relative "mcp_authorization/engine" if defined?(Rails)
 
 # MCP Authorization — schema-shaping authorization for MCP tool servers.

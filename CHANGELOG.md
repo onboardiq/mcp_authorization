@@ -4,6 +4,39 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-06-25
+
+Per-request work is now scoped to what each MCP method needs, and the
+remaining `tools/list` cost is cacheable.
+
+### Changed
+- **`McpController#handle` now materializes only the tools the incoming request needs.** Every request — `initialize`, `notifications/initialized`, `ping`, the GET stream probe, and `tools/call` — previously ran `ToolRegistry.tool_classes_for`, compiling a per-user schema for *every* tool in the domain before the transport even looked at the method. Per-tool schema compilation is the dominant cost of an MCP request, so a `tools/call` (which invokes exactly one tool) and lifecycle traffic (which needs none) paid the full-domain price for nothing. `handle` now routes by JSON-RPC method: `tools/list` materializes the whole domain (unchanged), `tools/call` materializes only the invoked tool, lifecycle methods and the non-POST probe materialize none, and any unrecognized shape (e.g. a JSON-RPC batch with no top-level `method`) falls back to the full domain so routing stays correct. In a 140-tool domain this took a `tools/call` from ~2.6s to <100ms and `notifications/initialized` from ~2s to ~1ms, with no change to `tools/list` output.
+
+### Added
+- **`ToolRegistry.tool_class_for(domain:, name:, server_context:)`** — returns the concrete `MCP::Tool` subclass for a single named tool within a domain (or `nil` when the tool is unknown in that domain or the current user is not permitted), materializing just that one tool instead of the whole domain. Complements `tool_classes_for`, which remains the path for `tools/list`.
+
+- **Opt-in caching for the `tools/list` response.** `tools/list` must materialize a per-user schema for every tool in a domain — the dominant cost of an MCP request now that `tools/call` compiles only the invoked tool (above). It can now be cached. Enable in the host initializer:
+
+  ```ruby
+  McpAuthorization.configure do |c|
+    c.tools_list_cache = :redis          # or :memory, or any object responding to get/set
+    c.tools_list_cache_ttl = 3600        # seconds (default)
+  end
+  ```
+
+  Default is no caching (`NullStore`), so behavior is unchanged unless opted in.
+
+- **Decision-vector cache key — correct under feature flags, shareable across identity.** The key is `H(domain + tool_defs_digest + vocab_fingerprint + decision_vector)`, never user/account identity. The decision vector is the result of every gating decision the domain's compilation consults — `@requires`/`@feature`/`@tier`/custom predicates, tool-level `gate`/`authorization`, and `current_user.can?` / `default_for`. Two contexts that answer all of them identically (same permissions, feature flags, tiers, defaults) share an entry; flip one feature flag and the vector — and the key — change, so an admin in a flag-on account never receives a flag-off account's tools. The `tool_defs_digest` (computed from each tool's gates + handler source) changes on deploy, auto-invalidating stale entries; the TTL bounds out-of-band staleness.
+
+- **Two ways to supply the decision vector.** Automatic: the gem learns a domain's predicate vocabulary by wrapping the context in a `Cache::Recorder` on the first (cold) compile, then replays that vocabulary against the live context on subsequent requests. Explicit: if the server context responds to `mcp_cache_fingerprint`, its return value is used verbatim as the decision component (the host folds in whatever shapes the schema). Explicit wins when present.
+
+- **Pluggable stores.** `Cache::NullStore` (default), `Cache::MemoryStore` (process-local, bounded LRU + per-entry TTL), and `Cache::RedisStore` (shared; JSON values; per-entry TTL). The Redis store's connection resolves from an explicit client (`tools_list_cache_redis`), then `tools_list_cache_redis_url`, then `ENV["REDIS_URL"]`, then a bare `Redis.new` — i.e. it defaults to the host's Rails redis config with no extra wiring. `redis` is an optional dependency, required lazily only when the Redis store is used. Cache outages fail open (a get/set error logs and behaves as a miss, never breaking `tools/list`).
+
+- **`McpController` serves `tools/list` through the cache** when enabled: a hit renders the cached `result` re-wrapped with the live JSON-RPC id; a miss compiles cold under a `Recorder`, learns the vocabulary, and stores the result. Error/unexpected responses are rendered but not cached. All other methods are unaffected.
+
+### Notes
+- The cache is cleared on code reload (the Engine reloader now also calls `Cache.reset!`), so development picks up tool/schema changes immediately.
+
 ## [0.5.6] - 2026-06-08
 
 ### Fixed

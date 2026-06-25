@@ -79,6 +79,34 @@ module McpAuthorization
     #: bool
     attr_accessor :strict_schema
 
+    # Cache for the +tools/list+ response. Opt-in; defaults to no caching.
+    # Accepts:
+    #   nil / false  — no caching (default)
+    #   :memory      — process-local MemoryStore
+    #   :redis       — shared RedisStore (connection resolved from
+    #                  +tools_list_cache_redis+ / +tools_list_cache_redis_url+ /
+    #                  ENV["REDIS_URL"] / a bare Redis.new — the Rails redis config)
+    #   <object>     — any store responding to +get+/+set+
+    # See McpAuthorization::Cache for the keying strategy.
+    #: untyped
+    attr_accessor :tools_list_cache
+
+    # TTL (seconds) for cached +tools/list+ entries. Bounds staleness from
+    # out-of-band changes (e.g. a feature flag toggled with no deploy); the
+    # deploy digest invalidates on tool/schema changes independently.
+    #: Integer
+    attr_accessor :tools_list_cache_ttl
+
+    # Optional explicit Redis client for the :redis store. When nil, the store
+    # resolves a connection from +tools_list_cache_redis_url+, then
+    # ENV["REDIS_URL"], then a bare +Redis.new+.
+    #: untyped
+    attr_accessor :tools_list_cache_redis
+
+    # Optional explicit Redis URL for the :redis store.
+    #: String?
+    attr_accessor :tools_list_cache_redis_url
+
     #: () -> void
     def initialize
       @server_name = "mcp-authorization"
@@ -90,6 +118,10 @@ module McpAuthorization
       @context_builder = nil
       @cli_context_builder = nil
       @strict_schema = false
+      @tools_list_cache = nil
+      @tools_list_cache_ttl = 3600
+      @tools_list_cache_redis = nil
+      @tools_list_cache_redis_url = nil
     end
   end
 end
