@@ -73,6 +73,23 @@ module McpAuthorization
         end
       end
 
+      # Concrete MCP::Tool subclass for a single named tool within a domain,
+      # or nil when the tool is unknown in that domain or the current user is
+      # not permitted to use it.
+      #
+      # Materializing a per-user schema is the dominant cost of handling an MCP
+      # request, so a +tools/call+ — which targets exactly one tool — should
+      # compile that one tool rather than the whole domain (what
+      # +tool_classes_for+ does for +tools/list+).
+      #: (domain: String, name: String, server_context: untyped) -> singleton(MCP::Tool)?
+      def tool_class_for(domain:, name:, server_context:)
+        tool_class = (tools_by_domain[domain] || []).find { |tc| tc.tool_name == name }
+        return nil unless tool_class
+        return nil unless tool_class.permitted?(server_context)
+
+        tool_class.materialize_for(server_context)
+      end
+
       # Look up a tool by its MCP tool name across all domains.
       #: (String) -> singleton(McpAuthorization::Tool)?
       def find_tool(name)
