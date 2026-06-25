@@ -6,8 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.6.0] - 2026-06-25
 
+Per-request work is now scoped to what each MCP method needs, and the
+remaining `tools/list` cost is cacheable.
+
+### Changed
+- **`McpController#handle` now materializes only the tools the incoming request needs.** Every request — `initialize`, `notifications/initialized`, `ping`, the GET stream probe, and `tools/call` — previously ran `ToolRegistry.tool_classes_for`, compiling a per-user schema for *every* tool in the domain before the transport even looked at the method. Per-tool schema compilation is the dominant cost of an MCP request, so a `tools/call` (which invokes exactly one tool) and lifecycle traffic (which needs none) paid the full-domain price for nothing. `handle` now routes by JSON-RPC method: `tools/list` materializes the whole domain (unchanged), `tools/call` materializes only the invoked tool, lifecycle methods and the non-POST probe materialize none, and any unrecognized shape (e.g. a JSON-RPC batch with no top-level `method`) falls back to the full domain so routing stays correct. In a 140-tool domain this took a `tools/call` from ~2.6s to <100ms and `notifications/initialized` from ~2s to ~1ms, with no change to `tools/list` output.
+
 ### Added
-- **Opt-in caching for the `tools/list` response.** `tools/list` must materialize a per-user schema for every tool in a domain — the dominant cost of an MCP request now that `tools/call` compiles only the invoked tool (0.5.7). It can now be cached. Enable in the host initializer:
+- **`ToolRegistry.tool_class_for(domain:, name:, server_context:)`** — returns the concrete `MCP::Tool` subclass for a single named tool within a domain (or `nil` when the tool is unknown in that domain or the current user is not permitted), materializing just that one tool instead of the whole domain. Complements `tool_classes_for`, which remains the path for `tools/list`.
+
+- **Opt-in caching for the `tools/list` response.** `tools/list` must materialize a per-user schema for every tool in a domain — the dominant cost of an MCP request now that `tools/call` compiles only the invoked tool (above). It can now be cached. Enable in the host initializer:
 
   ```ruby
   McpAuthorization.configure do |c|
@@ -28,14 +36,6 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Notes
 - The cache is cleared on code reload (the Engine reloader now also calls `Cache.reset!`), so development picks up tool/schema changes immediately.
-
-## [0.5.7] - 2026-06-25
-
-### Changed
-- **`McpController#handle` now materializes only the tools the incoming request needs.** Every request — `initialize`, `notifications/initialized`, `ping`, the GET stream probe, and `tools/call` — previously ran `ToolRegistry.tool_classes_for`, compiling a per-user schema for *every* tool in the domain before the transport even looked at the method. Per-tool schema compilation is the dominant cost of an MCP request, so a `tools/call` (which invokes exactly one tool) and lifecycle traffic (which needs none) paid the full-domain price for nothing. `handle` now routes by JSON-RPC method: `tools/list` materializes the whole domain (unchanged), `tools/call` materializes only the invoked tool, lifecycle methods and the non-POST probe materialize none, and any unrecognized shape (e.g. a JSON-RPC batch with no top-level `method`) falls back to the full domain so routing stays correct. In a 140-tool domain this took a `tools/call` from ~2.6s to <100ms and `notifications/initialized` from ~2s to ~1ms, with no change to `tools/list` output.
-
-### Added
-- **`ToolRegistry.tool_class_for(domain:, name:, server_context:)`** — returns the concrete `MCP::Tool` subclass for a single named tool within a domain (or `nil` when the tool is unknown in that domain or the current user is not permitted), materializing just that one tool instead of the whole domain. Complements `tool_classes_for`, which remains the path for `tools/list`.
 
 ## [0.5.6] - 2026-06-08
 
