@@ -46,6 +46,7 @@ module McpAuthorization
       app.reloader.to_prepare do
         McpAuthorization::ToolRegistry.reset!
         McpAuthorization::RbsSchemaCompiler.reset_cache!
+        McpAuthorization::Cache.reset!
       end
     end
 
