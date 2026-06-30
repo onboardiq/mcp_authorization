@@ -4,6 +4,11 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Single-line string-literal-union type aliases (e.g. `type logic = "AND" | "OR"`) lost every member after the first.** Both the `# @rbs type` inline-comment parser and the shared `sig/shared/*.rbs` file parser only scanned *subsequent lines* for `| "value"` continuations, so a union written entirely on one line — the common shape for short enums like `"AND" | "OR"` — resolved to `{type: "string", enum: ["AND"]}` instead of `["AND", "OR"]`. Multi-line unions (`"low"\n| "medium"\n| "high"`) were unaffected. Literal unions written directly inline on a record field (not behind a named alias) were also unaffected, since those go through the RBS-parser union visitor rather than the alias collector.
+
 ## [0.6.0] - 2026-06-25
 
 Per-request work is now scoped to what each MCP method needs, and the

@@ -120,6 +120,61 @@ class SingleLineAliasTest < Minitest::Test
     assert_equal "integer", ok.dig(:properties, :total, :type)
   end
 
+  def test_single_line_literal_union_alias_keeps_all_members
+    # Regression: `# @rbs type logic = "AND" | "OR"` written on one line.
+    # `parse_string_union` only scanned *following* lines for
+    # `| "value"` continuations, so a union with no continuation lines lost
+    # every member after the first — `logic` resolved to
+    # `{type: "string", enum: ["AND"]}` instead of `["AND", "OR"]`.
+    handler = build_handler(<<~SRC)
+      # @rbs type logic = "AND" | "OR"
+      # @rbs type comparator = "equals" | "not_equals" | "greater_than" | "less_than" | "contains"
+      # @rbs type condition = { logic: logic, comparator: comparator }
+      class <%= klass_name %>
+        #: (condition: condition) -> untyped
+        def call(**); end
+      end
+    SRC
+
+    schema = C.compile_input(handler, server_context: StubContext.new([]))
+    condition = schema.dig(:properties, :condition)
+
+    assert_equal %w[AND OR], condition.dig(:properties, :logic, :enum)
+    assert_equal %w[equals not_equals greater_than less_than contains],
+      condition.dig(:properties, :comparator, :enum)
+  end
+
+  def test_single_line_literal_union_in_shared_rbs_file_keeps_all_members
+    # Same regression as above, but through the `# @rbs import` path —
+    # `collect_rbs_file_aliases` / `parse_rbs_string_union` had the
+    # identical bug for bare `type logic = "AND" | "OR"` lines in a shared
+    # `sig/shared/*.rbs` file.
+    dir = Dir.mktmpdir("mcp_auth_single_line_shared")
+    prev_paths = McpAuthorization.config.shared_type_paths
+    McpAuthorization.config.shared_type_paths = [dir]
+
+    begin
+      File.write(File.join(dir, "shared_types.rbs"), <<~RBS)
+        type logic = "AND" | "OR"
+      RBS
+
+      handler = build_handler(<<~SRC)
+        # @rbs import shared_types
+        # @rbs type condition = { logic: logic }
+        class <%= klass_name %>
+          #: (condition: condition) -> untyped
+          def call(**); end
+        end
+      SRC
+
+      schema = C.compile_input(handler, server_context: StubContext.new([]))
+      assert_equal %w[AND OR], schema.dig(:properties, :condition, :properties, :logic, :enum)
+    ensure
+      McpAuthorization.config.shared_type_paths = prev_paths
+      FileUtils.remove_entry(dir)
+    end
+  end
+
   def build_handler(template)
     klass_name = "SingleLineAliasHandler_#{self.class.next_serial}"
     src = template.gsub("<%= klass_name %>", klass_name)
