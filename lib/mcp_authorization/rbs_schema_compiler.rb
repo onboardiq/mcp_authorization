@@ -1364,7 +1364,7 @@ module McpAuthorization
             current_name = $1.to_s
             current_base = nil
             current_body = "{"
-          elsif stripped =~ /\Atype (\w+) = "([^"]+)"/
+          elsif stripped =~ /\Atype (\w+) = ("[^"]*"(?:\s*\|\s*"[^"]*")*)/
             aliases[$1.to_s] = parse_rbs_string_union($2.to_s, line, content)
           elsif current_name
             current_body << strip_rbs_comment(stripped)
@@ -1380,15 +1380,24 @@ module McpAuthorization
         aliases
       end
 
-      # Parse a multi-line string literal union from an .rbs file:
+      # Parse a string literal union from an .rbs file, either written on
+      # one line:
+      #   type logic = "AND" | "OR"
+      # or continued across multiple lines:
       #   type priority = "low"
       #                 | "medium"
       #                 | "high"
       #
+      # +first_segment+ is everything captured after the +=+ on the
+      # opening line, which may itself already contain the full
+      # +"a" | "b" | "c"+ union — a single-line union has no continuation
+      # lines, so capturing only its first quoted literal (the prior
+      # behavior) silently dropped every member after the first.
+      #
       # @return [Hash] +{type: "string", enum: ["low", "medium", "high"]}+
       #: (String, String, String) -> Hash[Symbol, untyped]
-      def parse_rbs_string_union(first_value, line, content)
-        values = [first_value]
+      def parse_rbs_string_union(first_segment, line, content)
+        values = first_segment.scan(/"([^"]*)"/).flatten
         content.each_line.drop_while { |l| l != line }.drop(1).each do |next_line|
           if next_line =~ /^\s*\|\s*"([^"]+)"/
             values << $1.to_s
@@ -1491,7 +1500,7 @@ module McpAuthorization
               current_name = nil
               current_body = +""
             end
-          elsif line =~ /#\s*@rbs type (\w+)\s*=\s*"([^"]+)"/
+          elsif line =~ /#\s*@rbs type (\w+)\s*=\s*("[^"]*"(?:\s*\|\s*"[^"]*")*)/
             aliases[$1.to_s] = parse_string_union($2.to_s, line, content)
           elsif current_name
             stripped = strip_rbs_comment(line.strip.sub(/^#\s*/, ""))
@@ -1961,15 +1970,24 @@ module McpAuthorization
         str.count("{") == str.count("}")
       end
 
-      # Parse a multi-line string literal union from handler source comments:
+      # Parse a string literal union from handler source comments, either
+      # written on one line:
+      #   # @rbs type logic = "AND" | "OR"
+      # or continued across multiple lines:
       #   # @rbs type priority = "low"
       #   #                    | "medium"
       #   #                    | "high"
       #
+      # +first_segment+ is everything captured after the +=+ on the
+      # opening line, which may itself already contain the full
+      # +"a" | "b" | "c"+ union — a single-line union has no continuation
+      # lines, so capturing only its first quoted literal (the prior
+      # behavior) silently dropped every member after the first.
+      #
       # @return [Hash] +{type: "string", enum: ["low", "medium", "high"]}+
       #: (String, String, String) -> Hash[Symbol, untyped]
-      def parse_string_union(first_value, line, content)
-        values = [first_value]
+      def parse_string_union(first_segment, line, content)
+        values = first_segment.scan(/"([^"]*)"/).flatten
         content.each_line.drop_while { |l| l != line }.drop(1).each do |next_line|
           if next_line =~ /^\s*#\s*\|\s*"([^"]+)"/
             values << $1.to_s
