@@ -4,6 +4,11 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.2] - 2026-07-01
+
+### Fixed
+- **A record field whose type is an inline string-literal union with a single field-level tag was misclassified as a per-member-tagged union.** `compile_tagged_record` routes a field into `compile_tagged_union` (which gates each `|`-separated member individually, e.g. `stage: a @feature(x) | b @feature(y)`) whenever `tagged_union_field?` sees an `@` anywhere in the type string plus more than one `|`-separated part. A plain literal union with one *field-level* tag trailing the whole thing — `logic: "AND" | "OR" @desc(...)` — matches that same heuristic even though the tag applies to the field, not an individual member. Misrouting sends each bare literal (`"AND"`, `"OR"`) through `resolve_type`, which only resolves *named alias references*; each literal fell back to `{type: "object"}`, producing `{type: "object", oneOf: [{type: "object"}, {type: "object"}]}` instead of `{type: "string", enum: ["AND", "OR"]}`. `tagged_union_field?` and `tagged_array_union_inner` now require at least one *non-final* `|`-separated member to carry a tag before treating a field as per-member-gated — every genuine per-member-tagged union in this codebase tags each gated member individually, so a tag trailing only the last member is never sufficient on its own. Field-level tags on inline literal unions now fall through to the normal RBS-library path (`visit_rbs_union`), which already resolved them correctly.
+
 ## [0.6.1] - 2026-07-01
 
 ### Fixed
