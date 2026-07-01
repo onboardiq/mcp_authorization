@@ -1094,10 +1094,19 @@ module McpAuthorization
       # True when a record field's type is a multi-member union that carries a
       # predicate tag — i.e. per-member gating is intended. A `|` at bracket
       # depth 0 marks a real union (not one inside a nested generic/record).
+      #
+      # A tag trailing only the *final* member (e.g. a plain literal union
+      # with one field-level `@desc(...)`, as in `"AND" | "OR" @desc(...)`)
+      # is NOT per-member gating — every genuine per-member-tagged union in
+      # this codebase tags each gated member individually
+      # (`a @feature(x) | b @feature(y)`), so at least one *non-final*
+      # member must carry a tag before we route into compile_tagged_union.
+      # Otherwise the field falls through to the normal RBS-library path,
+      # which resolves inline literal unions correctly via visit_rbs_union.
       #: (String) -> bool
       def tagged_union_field?(type_str)
         return false unless type_str.include?("@")
-        split_at_depth_zero(type_str, "|").size > 1
+        per_member_tagged_union?(type_str, "|")
       end
 
       # If a field type is +Array[<multi-member tagged union>]+, return the inner
@@ -1111,7 +1120,18 @@ module McpAuthorization
         return nil unless m
 
         inner = m[1].to_s
-        split_at_depth_zero(inner, "|").size > 1 ? inner : nil
+        per_member_tagged_union?(inner, "|") ? inner : nil
+      end
+
+      # True when a `|`-separated type expression has more than one member
+      # AND at least one *non-final* member carries a predicate tag. See
+      # tagged_union_field? for why the final member alone doesn't count.
+      #: (String, String) -> bool
+      def per_member_tagged_union?(type_str, delimiter)
+        parts = split_at_depth_zero(type_str, delimiter)
+        return false unless parts.size > 1
+
+        parts[0..-2].any? { |part| part.include?("@") }
       end
 
       # Compile a union-style output type (+# @rbs type output = success | admin_detail @requires(:admin)+)
