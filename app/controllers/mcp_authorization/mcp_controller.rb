@@ -2,6 +2,13 @@ module McpAuthorization
   class McpController < ActionController::Base
     skip_forgery_protection
 
+    # Response header stamped on every cached tools/list path so hosts can log
+    # cache behavior: "hit" (served from the store), "miss" (compiled cold and
+    # stored), or "bypass" (compiled but not cached — cache had no key for this
+    # request, e.g. the domain's decision vocabulary isn't learned yet, or the
+    # response wasn't a cacheable result).
+    TOOLS_LIST_CACHE_HEADER = "X-MCP-Tools-List-Cache" #: String
+
     # POST/GET/DELETE /mcp/:domain
     #: () -> void
     def handle
@@ -48,6 +55,7 @@ module McpAuthorization
 
       key = McpAuthorization::Cache.tools_list_key(domain: domain, server_context: server_context)
       if key && (cached = McpAuthorization::Cache.store.get(key))
+        response.set_header(TOOLS_LIST_CACHE_HEADER, "hit")
         return render json: tools_list_envelope(cached)
       end
 
@@ -63,11 +71,17 @@ module McpAuthorization
       end
       result = parsed && parsed["result"]
       unless result
+        response.set_header(TOOLS_LIST_CACHE_HEADER, "bypass")
         return render json: body.first, status: status # error / unexpected shape — don't cache
       end
 
       store_key = McpAuthorization::Cache.tools_list_key(domain: domain, server_context: server_context)
-      McpAuthorization::Cache.store.set(store_key, result, ttl: McpAuthorization::Cache.ttl) if store_key
+      if store_key
+        McpAuthorization::Cache.store.set(store_key, result, ttl: McpAuthorization::Cache.ttl)
+        response.set_header(TOOLS_LIST_CACHE_HEADER, "miss")
+      else
+        response.set_header(TOOLS_LIST_CACHE_HEADER, "bypass")
+      end
       render json: tools_list_envelope(result), status: status
     end
 
