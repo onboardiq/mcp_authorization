@@ -111,7 +111,7 @@ module McpAuthorization
       def build_facade(domain, category, tools, server_context, config)
         name = facade_name(category)
         desc = facade_description(category, tools, server_context)
-        strategy = config[:schema_strategy]
+        strategy = resolve_strategy(config, tools)
         schema = facade_input_schema(tools, server_context, strategy)
         schema = McpAuthorization::RbsSchemaCompiler.strict_sanitize(schema) if McpAuthorization.config.strict_schema
 
@@ -212,6 +212,21 @@ module McpAuthorization
             required: %w[tool_name arguments]
           }
         end
+      end
+
+      # Resolve the configured strategy to a concrete one for THIS group.
+      # `:auto` keeps small groups rich (`:discriminated_union` — per-tool
+      # schemas inline and correlated to `tool_name`, which the model can use
+      # without the client expanding `_meta`, at trivial size for a few
+      # branches) and large groups compact (`:vendor_extension` — schemas on
+      # `_meta`, so a big group doesn't inflate the listing with a large
+      # `oneOf`). The cutoff is `auto_threshold` (tool count).
+      #: (Hash[Symbol, untyped], Array[singleton(McpAuthorization::Tool)]) -> Symbol
+      def resolve_strategy(config, tools)
+        strategy = config[:schema_strategy]
+        return strategy unless strategy == :auto
+
+        tools.length <= config[:auto_threshold] ? :discriminated_union : :vendor_extension
       end
 
       # Per-tool compiled input schemas keyed by tool_name, filtered for this

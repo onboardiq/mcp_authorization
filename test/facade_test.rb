@@ -336,6 +336,30 @@ class FacadeTest < Minitest::Test
     assert update_branch[:properties][:arguments][:properties].key?(:id)
   end
 
+  def test_auto_uses_discriminated_union_for_small_group
+    define_standard_tools # 2 tools, <= default threshold 5
+    facet!(schema_strategy: :auto)
+    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: full_ctx)
+    schema = facade.input_schema
+
+    assert schema.key?(:oneOf), "a small group under :auto should use discriminated_union"
+    assert_nil facade.meta, "discriminated_union carries no _meta"
+  end
+
+  def test_auto_uses_vendor_extension_above_threshold
+    define_standard_tools # 2 tools
+    facet!(schema_strategy: :auto, auto_threshold: 1) # 2 > 1
+    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: full_ctx)
+    schema = facade.input_schema
+
+    refute schema.key?(:oneOf), "above threshold, :auto should fall back to vendor_extension"
+    assert facade.meta["tool-input-schemas"], "vendor_extension carries per-tool schemas on _meta"
+  end
+
+  def test_facet_domain_rejects_non_positive_auto_threshold
+    assert_raises(ArgumentError) { facet!(schema_strategy: :auto, auto_threshold: 0) }
+  end
+
   def test_lazy_schema_carries_names_only
     define_standard_tools
     facet!(schema_strategy: :lazy)

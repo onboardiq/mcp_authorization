@@ -119,7 +119,13 @@ module McpAuthorization
     attr_reader :category_summaries
 
     # Schema strategies FacadeBuilder knows how to emit.
-    SCHEMA_STRATEGIES = %i[vendor_extension discriminated_union lazy].freeze #: Array[Symbol]
+    SCHEMA_STRATEGIES = %i[vendor_extension discriminated_union lazy auto].freeze #: Array[Symbol]
+
+    # Default group-size cutoff for the :auto schema strategy: groups with this
+    # many tools or fewer get :discriminated_union (rich per-tool schemas inline,
+    # trivial size cost, no _meta expansion needed by the client), larger groups
+    # get :vendor_extension (compact listing, schemas on _meta).
+    DEFAULT_AUTO_THRESHOLD = 5 #: Integer
 
     # Behaviors for a tool in a faceted domain that declares no +category+.
     UNCATEGORIZED_MODES = %i[fallback error].freeze #: Array[Symbol]
@@ -162,7 +168,7 @@ module McpAuthorization
     # +category+: +:fallback+ (default) collects them into an +uncategorized+
     # group; +:error+ raises at facade-build time.
     #: (Symbol | String, group_by: Symbol, ?schema_strategy: Symbol, ?uncategorized: Symbol) -> void
-    def facet_domain(domain, group_by:, schema_strategy: :vendor_extension, uncategorized: :fallback)
+    def facet_domain(domain, group_by:, schema_strategy: :vendor_extension, uncategorized: :fallback, auto_threshold: DEFAULT_AUTO_THRESHOLD)
       unless SCHEMA_STRATEGIES.include?(schema_strategy)
         raise ArgumentError, "unknown schema_strategy #{schema_strategy.inspect}; " \
           "expected one of #{SCHEMA_STRATEGIES.inspect}"
@@ -171,11 +177,15 @@ module McpAuthorization
         raise ArgumentError, "unknown uncategorized mode #{uncategorized.inspect}; " \
           "expected one of #{UNCATEGORIZED_MODES.inspect}"
       end
+      unless auto_threshold.is_a?(Integer) && auto_threshold.positive?
+        raise ArgumentError, "auto_threshold must be a positive Integer, got #{auto_threshold.inspect}"
+      end
 
       @faceted_domains[domain.to_s] = {
         group_by: group_by.to_sym,
         schema_strategy: schema_strategy,
-        uncategorized: uncategorized
+        uncategorized: uncategorized,
+        auto_threshold: auto_threshold
       }
     end
 

@@ -414,6 +414,13 @@ Where per-tool argument schemas live is selectable per domain via
   `oneOf` (under `strict_schema` it is emitted as `anyOf`).
 - `:lazy` — names and one-liners only; argument shapes are enforced at
   dispatch by the target tool.
+- `:auto` — per group, `:discriminated_union` when the group has
+  `auto_threshold` tools or fewer (default 5), else `:vendor_extension`. Keeps
+  small groups rich (per-tool schemas inline and correlated, which the model
+  can use without the client reading `_meta`) while keeping large groups
+  compact. Recommended when the consumer tolerates a top-level `oneOf`
+  (Anthropic and non-strict OpenAI do); tune the cutoff with
+  `auto_threshold:`.
 
 Uncategorized tools land in an `uncategorized` facade by default; pass
 `uncategorized: :error` to fail fast instead. Groups with zero permitted tools
