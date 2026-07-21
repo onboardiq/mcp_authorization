@@ -9,6 +9,7 @@ module McpAuthorization
     def tools_list_envelope: (untyped) -> String
     def mcp_request_id: () -> untyped
     def tools_for_request: (untyped) -> Array[singleton(MCP::Tool)]
+    def resolve_tool: (String, untyped) -> singleton(MCP::Tool)?
     def all_tools: (untyped) -> Array[singleton(MCP::Tool)]
     def mcp_method: () -> untyped
     def mcp_request_params: () -> untyped

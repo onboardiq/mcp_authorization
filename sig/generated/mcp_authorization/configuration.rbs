@@ -15,6 +15,13 @@ module McpAuthorization
     attr_accessor tools_list_cache_ttl: Integer
     attr_accessor tools_list_cache_redis: untyped
     attr_accessor tools_list_cache_redis_url: String?
+    attr_reader faceted_domains: Hash[String, Hash[Symbol, untyped]]
+    attr_reader category_summaries: Hash[Symbol, String]
     def initialize: () -> void
+    def facet_domain: (Symbol | String, group_by: Symbol, ?schema_strategy: Symbol, ?uncategorized: Symbol) -> void
+    def faceted?: (String) -> bool
+    def facet_config: (String) -> Hash[Symbol, untyped]?
+    def categories: () { () -> void } -> void
+    def category_summary: (Symbol) -> String?
   end
 end
