@@ -298,8 +298,13 @@ class FacadeTest < Minitest::Test
     assert_equal %w[tool_name arguments], schema[:required]
     assert_equal ["list_widgets_#{domain}", "update_widget_#{domain}"].sort,
                  schema[:properties][:tool_name][:enum].sort
+    # inputSchema itself stays standards-clean — no non-standard key that a
+    # strict Zod client or strict-mode LLM tool-calling would reject.
+    refute schema.key?(:"x-tool-input-schemas"),
+      "per-tool schemas must not live inside inputSchema"
 
-    per_tool = schema[:"x-tool-input-schemas"]
+    # ...they ship on the facade's _meta instead.
+    per_tool = facade.meta["tool-input-schemas"]
     update_schema = per_tool["update_widget_#{domain}"]
     assert update_schema[:properties].key?(:id), "per-tool schema must carry real argument shapes"
     assert update_schema[:properties].key?(:force),
@@ -312,7 +317,7 @@ class FacadeTest < Minitest::Test
     ctx = StubContext.new([:view_widgets, :manage_widgets]) # not :admin
     facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
 
-    update_schema = facade.input_schema[:"x-tool-input-schemas"]["update_widget_#{domain}"]
+    update_schema = facade.meta["tool-input-schemas"]["update_widget_#{domain}"]
     refute update_schema[:properties].key?(:force),
       "@requires(:admin) field must be filtered out of the deferred schema for non-admins"
   end
@@ -341,6 +346,7 @@ class FacadeTest < Minitest::Test
                  schema[:properties][:tool_name][:enum].sort
     refute schema.key?(:"x-tool-input-schemas")
     refute schema.key?(:oneOf)
+    assert_nil facade.meta, "lazy strategy carries no per-tool schemas anywhere"
   end
 
   def test_strict_schema_converts_facade_oneof_to_anyof

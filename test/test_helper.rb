@@ -30,6 +30,11 @@ module MCP
         @output_schema
       end
 
+      def meta(value = nil)
+        @meta = value if value
+        @meta
+      end
+
       def annotations(**hints)
         @annotations = hints
       end

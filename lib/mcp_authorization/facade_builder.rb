@@ -111,8 +111,20 @@ module McpAuthorization
       def build_facade(domain, category, tools, server_context, config)
         name = facade_name(category)
         desc = facade_description(category, tools, server_context)
-        schema = facade_input_schema(tools, server_context, config[:schema_strategy])
+        strategy = config[:schema_strategy]
+        schema = facade_input_schema(tools, server_context, strategy)
         schema = McpAuthorization::RbsSchemaCompiler.strict_sanitize(schema) if McpAuthorization.config.strict_schema
+
+        # :vendor_extension ships the per-tool argument schemas out-of-band on
+        # the facade's `_meta` — the MCP-sanctioned extension channel — rather
+        # than as a non-standard key inside `inputSchema`. Client SDKs preserve
+        # `_meta` but strip (or, when strict, reject) unknown JSON Schema
+        # keywords, and `_meta` is never forwarded to the model as the tool's
+        # input_schema. So the listing stays valid for strict Zod clients and
+        # strict-mode LLM tool-calling while still carrying the schemas in-band
+        # for capable clients.
+        meta_payload = strategy == :vendor_extension ? { "tool-input-schemas" => child_schema_map(tools, server_context) } : nil
+
         advertised = tools.map(&:tool_name).to_set
         builder = self
         ctx = server_context
@@ -121,6 +133,7 @@ module McpAuthorization
           tool_name name
           description desc
           input_schema schema
+          meta(meta_payload) if meta_payload
 
           define_singleton_method(:call) do |server_context: nil, **params|
             builder.send(:dispatch, domain, advertised, params, server_context || ctx)
@@ -175,40 +188,40 @@ module McpAuthorization
               }
             end
           }
-        when :lazy
-          # Names only — smallest listing. The description's one-liners are
-          # the routing signal; argument shapes are enforced at dispatch by
-          # the target tool's own filter_input.
+        else # :vendor_extension (default) and :lazy
+          # Standards-clean: a plain enum + permissive arguments object, with
+          # NO non-standard keys — valid for strict Zod clients and strict-mode
+          # LLM tool-calling. :vendor_extension additionally ships the per-tool
+          # schemas on the facade's `_meta` (see build_facade); :lazy ships
+          # nothing and relies on dispatch-time filter_input to enforce shapes.
+          arguments_description =
+            if strategy == :vendor_extension
+              'Arguments for the chosen tool; per-tool schemas are in this tool\'s _meta under "tool-input-schemas".'
+            else
+              "Arguments for the chosen tool."
+            end
           {
             type: "object",
             properties: {
               tool_name: { type: "string", enum: names },
               arguments: {
                 type: "object",
-                description: "Arguments for the chosen tool."
+                description: arguments_description
               }
             },
             required: %w[tool_name arguments]
           }
-        else # :vendor_extension (default)
-          # Valid everywhere: a plain enum + object, with full per-tool
-          # schemas carried in an x- extension that validators ignore and
-          # capable clients can read.
-          schemas = tools.each_with_object({}) do |tool_class, map|
-            map[tool_class.tool_name] = tool_class.dynamic_input_schema(server_context: server_context)
-          end
-          {
-            type: "object",
-            properties: {
-              tool_name: { type: "string", enum: names },
-              arguments: {
-                type: "object",
-                description: "Arguments for the chosen tool; per-tool shapes in x-tool-input-schemas."
-              }
-            },
-            required: %w[tool_name arguments],
-            "x-tool-input-schemas": schemas
-          }
+        end
+      end
+
+      # Per-tool compiled input schemas keyed by tool_name, filtered for this
+      # caller. Shipped on the facade's `_meta` by the :vendor_extension
+      # strategy so the argument shapes travel with the listing without a
+      # non-standard key inside `inputSchema`.
+      #: (Array[singleton(McpAuthorization::Tool)], untyped) -> Hash[String, untyped]
+      def child_schema_map(tools, server_context)
+        tools.each_with_object({}) do |tool_class, map|
+          map[tool_class.tool_name] = tool_class.dynamic_input_schema(server_context: server_context)
         end
       end
 

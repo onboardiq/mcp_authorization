@@ -402,8 +402,13 @@ tool's schema.
 Where per-tool argument schemas live is selectable per domain via
 `schema_strategy:`:
 
-- `:vendor_extension` (default) — `tool_name` enum plus an
-  `x-tool-input-schemas` map; inert to validators, readable by capable clients.
+- `:vendor_extension` (default) — `tool_name` enum, with the per-tool schemas
+  carried on the facade's `_meta` (key `"tool-input-schemas"`). `_meta` is the
+  MCP-sanctioned extension channel: SDKs preserve it, it is never forwarded to
+  the model as the tool `input_schema`, and `inputSchema` itself stays free of
+  non-standard keys — so the listing is valid for strict Zod clients and
+  strict-mode tool-calling while still shipping schemas in-band for capable
+  clients.
 - `:discriminated_union` — a `oneOf` of `{tool_name, arguments}` branches;
   native JSON Schema, but some strict tool-calling stacks reject a top-level
   `oneOf` (under `strict_schema` it is emitted as `anyOf`).
