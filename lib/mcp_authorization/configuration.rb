@@ -119,13 +119,14 @@ module McpAuthorization
     attr_reader :category_summaries
 
     # Schema strategies FacadeBuilder knows how to emit.
-    SCHEMA_STRATEGIES = %i[vendor_extension discriminated_union lazy auto].freeze #: Array[Symbol]
-
-    # Default group-size cutoff for the :auto schema strategy: groups with this
-    # many tools or fewer get :discriminated_union (rich per-tool schemas inline,
-    # trivial size cost, no _meta expansion needed by the client), larger groups
-    # get :vendor_extension (compact listing, schemas on _meta).
-    DEFAULT_AUTO_THRESHOLD = 5 #: Integer
+    # LLM tool `input_schema` must have an object root — Anthropic and OpenAI
+    # reject `oneOf`/`allOf`/`anyOf` at the top level — so both facade
+    # strategies keep a flat object root and differ only in where the per-tool
+    # schemas go: `:vendor_extension` carries them on the facade's `_meta`;
+    # `:lazy` omits them (enforced at dispatch). A correlated inline shape
+    # (tool_name → its argument schema) would require a root combinator and is
+    # therefore not offered.
+    SCHEMA_STRATEGIES = %i[vendor_extension lazy].freeze #: Array[Symbol]
 
     # Behaviors for a tool in a faceted domain that declares no +category+.
     UNCATEGORIZED_MODES = %i[fallback error].freeze #: Array[Symbol]
@@ -153,22 +154,23 @@ module McpAuthorization
     #
     #   config.facet_domain :admin, group_by: :category
     #   config.facet_domain :admin, group_by: :category,
-    #                        schema_strategy: :discriminated_union,
+    #                        schema_strategy: :lazy,
     #                        uncategorized: :error
     #
     # +group_by+ is currently always +:category+ (the only grouping key the
     # +category+ DSL provides); it is accepted explicitly so future grouping
     # keys are an additive change rather than a behavior switch.
     #
-    # +schema_strategy+ selects where per-tool argument schemas live in the
-    # facade's inputSchema — see SCHEMA_STRATEGIES. Defaults to the
-    # validator-inert +:vendor_extension+.
+    # +schema_strategy+ selects where the per-tool argument schemas go (the
+    # facade inputSchema is a flat object either way — see SCHEMA_STRATEGIES).
+    # +:vendor_extension+ (default) carries them on the facade's +_meta+;
+    # +:lazy+ omits them.
     #
     # +uncategorized+ controls what happens to a tool in this domain with no
     # +category+: +:fallback+ (default) collects them into an +uncategorized+
     # group; +:error+ raises at facade-build time.
     #: (Symbol | String, group_by: Symbol, ?schema_strategy: Symbol, ?uncategorized: Symbol) -> void
-    def facet_domain(domain, group_by:, schema_strategy: :vendor_extension, uncategorized: :fallback, auto_threshold: DEFAULT_AUTO_THRESHOLD)
+    def facet_domain(domain, group_by:, schema_strategy: :vendor_extension, uncategorized: :fallback)
       unless SCHEMA_STRATEGIES.include?(schema_strategy)
         raise ArgumentError, "unknown schema_strategy #{schema_strategy.inspect}; " \
           "expected one of #{SCHEMA_STRATEGIES.inspect}"
@@ -177,15 +179,11 @@ module McpAuthorization
         raise ArgumentError, "unknown uncategorized mode #{uncategorized.inspect}; " \
           "expected one of #{UNCATEGORIZED_MODES.inspect}"
       end
-      unless auto_threshold.is_a?(Integer) && auto_threshold.positive?
-        raise ArgumentError, "auto_threshold must be a positive Integer, got #{auto_threshold.inspect}"
-      end
 
       @faceted_domains[domain.to_s] = {
         group_by: group_by.to_sym,
         schema_strategy: schema_strategy,
-        uncategorized: uncategorized,
-        auto_threshold: auto_threshold
+        uncategorized: uncategorized
       }
     end
 

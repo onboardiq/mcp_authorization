@@ -322,42 +322,24 @@ class FacadeTest < Minitest::Test
       "@requires(:admin) field must be filtered out of the deferred schema for non-admins"
   end
 
-  def test_discriminated_union_schema_shape
+  def test_facet_domain_rejects_unknown_schema_strategy
+    # :discriminated_union / :auto were removed — a top-level combinator is
+    # invalid in an LLM tool input_schema, so only the flat strategies remain.
+    assert_raises(ArgumentError) { facet!(schema_strategy: :discriminated_union) }
+    assert_raises(ArgumentError) { facet!(schema_strategy: :auto) }
+  end
+
+  def test_no_facade_strategy_emits_a_top_level_combinator
     define_standard_tools
-    facet!(schema_strategy: :discriminated_union)
-    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: full_ctx)
-    schema = facade.input_schema
-
-    branches = schema[:oneOf]
-    assert_equal 2, branches.length
-    consts = branches.map { |b| b[:properties][:tool_name][:const] }.sort
-    assert_equal ["list_widgets_#{domain}", "update_widget_#{domain}"], consts
-    update_branch = branches.find { |b| b[:properties][:tool_name][:const] == "update_widget_#{domain}" }
-    assert update_branch[:properties][:arguments][:properties].key?(:id)
-  end
-
-  def test_auto_uses_discriminated_union_for_small_group
-    define_standard_tools # 2 tools, <= default threshold 5
-    facet!(schema_strategy: :auto)
-    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: full_ctx)
-    schema = facade.input_schema
-
-    assert schema.key?(:oneOf), "a small group under :auto should use discriminated_union"
-    assert_nil facade.meta, "discriminated_union carries no _meta"
-  end
-
-  def test_auto_uses_vendor_extension_above_threshold
-    define_standard_tools # 2 tools
-    facet!(schema_strategy: :auto, auto_threshold: 1) # 2 > 1
-    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: full_ctx)
-    schema = facade.input_schema
-
-    refute schema.key?(:oneOf), "above threshold, :auto should fall back to vendor_extension"
-    assert facade.meta["tool-input-schemas"], "vendor_extension carries per-tool schemas on _meta"
-  end
-
-  def test_facet_domain_rejects_non_positive_auto_threshold
-    assert_raises(ArgumentError) { facet!(schema_strategy: :auto, auto_threshold: 0) }
+    McpAuthorization::Configuration::SCHEMA_STRATEGIES.each do |strategy|
+      McpAuthorization.config.instance_variable_set(:@faceted_domains, {})
+      facet!(schema_strategy: strategy)
+      schema = FB.facade_for(domain: domain, name: "widgets_tools", server_context: full_ctx).input_schema
+      assert_equal "object", schema[:type], "#{strategy}: root must be an object"
+      %i[oneOf anyOf allOf].each do |combinator|
+        refute schema.key?(combinator), "#{strategy}: inputSchema must not have a top-level #{combinator}"
+      end
+    end
   end
 
   def test_lazy_schema_carries_names_only
@@ -371,16 +353,6 @@ class FacadeTest < Minitest::Test
     refute schema.key?(:"x-tool-input-schemas")
     refute schema.key?(:oneOf)
     assert_nil facade.meta, "lazy strategy carries no per-tool schemas anywhere"
-  end
-
-  def test_strict_schema_converts_facade_oneof_to_anyof
-    define_standard_tools
-    facet!(schema_strategy: :discriminated_union)
-    McpAuthorization.config.strict_schema = true
-    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: full_ctx)
-
-    refute facade.input_schema.key?(:oneOf), "strict mode must not emit a top-level oneOf"
-    assert facade.input_schema.key?(:anyOf)
   end
 
   # --------------------------------------------------------------------------

@@ -399,28 +399,21 @@ gating, and schema filtering apply exactly as if the tool had been called
 directly, and JSON-string argument blobs are coerced against the *target*
 tool's schema.
 
-Where per-tool argument schemas live is selectable per domain via
-`schema_strategy:`:
+The facade `inputSchema` is always a flat object (a `tool_name` enum plus a
+permissive `arguments` object). It has to be: an LLM tool `input_schema` must
+have an object root — Anthropic and OpenAI reject `oneOf`/`allOf`/`anyOf` at the
+top level — and hosts routinely forward a facade's `inputSchema` straight to the
+model. A correlated inline shape (each `tool_name` tied to its own argument
+schema) would need a root combinator, so it is not offered. `schema_strategy:`
+therefore only chooses where the per-tool schemas go:
 
-- `:vendor_extension` (default) — `tool_name` enum, with the per-tool schemas
-  carried on the facade's `_meta` (key `"tool-input-schemas"`). `_meta` is the
-  MCP-sanctioned extension channel: SDKs preserve it, it is never forwarded to
-  the model as the tool `input_schema`, and `inputSchema` itself stays free of
-  non-standard keys — so the listing is valid for strict Zod clients and
-  strict-mode tool-calling while still shipping schemas in-band for capable
-  clients.
-- `:discriminated_union` — a `oneOf` of `{tool_name, arguments}` branches;
-  native JSON Schema, but some strict tool-calling stacks reject a top-level
-  `oneOf` (under `strict_schema` it is emitted as `anyOf`).
-- `:lazy` — names and one-liners only; argument shapes are enforced at
-  dispatch by the target tool.
-- `:auto` — per group, `:discriminated_union` when the group has
-  `auto_threshold` tools or fewer (default 5), else `:vendor_extension`. Keeps
-  small groups rich (per-tool schemas inline and correlated, which the model
-  can use without the client reading `_meta`) while keeping large groups
-  compact. Recommended when the consumer tolerates a top-level `oneOf`
-  (Anthropic and non-strict OpenAI do); tune the cutoff with
-  `auto_threshold:`.
+- `:vendor_extension` (default) — the per-tool schemas are carried on the
+  facade's `_meta` (key `"tool-input-schemas"`). `_meta` is the MCP-sanctioned
+  extension channel: SDKs preserve it and it is never forwarded to the model as
+  the tool `input_schema`, so the schemas stay available in-band for a client
+  that wants to expand the facade, without touching `inputSchema`.
+- `:lazy` — names and one-liners only; argument shapes are enforced at dispatch
+  by the target tool's own `filter_input`.
 
 Uncategorized tools land in an `uncategorized` facade by default; pass
 `uncategorized: :error` to fail fast instead. Groups with zero permitted tools

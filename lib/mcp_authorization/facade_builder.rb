@@ -111,9 +111,8 @@ module McpAuthorization
       def build_facade(domain, category, tools, server_context, config)
         name = facade_name(category)
         desc = facade_description(category, tools, server_context)
-        strategy = resolve_strategy(config, tools)
-        schema = facade_input_schema(tools, server_context, strategy)
-        schema = McpAuthorization::RbsSchemaCompiler.strict_sanitize(schema) if McpAuthorization.config.strict_schema
+        strategy = config[:schema_strategy]
+        schema = facade_input_schema(tools, strategy)
 
         # :vendor_extension ships the per-tool argument schemas out-of-band on
         # the facade's `_meta` — the MCP-sanctioned extension channel — rather
@@ -168,65 +167,32 @@ module McpAuthorization
       # per-tool schemas out of the description and advertise only tools the
       # caller may invoke; they differ in where argument schemas live.
       #: (Array[singleton(McpAuthorization::Tool)], untyped, Symbol) -> Hash[Symbol, untyped]
-      def facade_input_schema(tools, server_context, strategy)
-        names = tools.map(&:tool_name)
+      # The facade inputSchema is always a flat object — a `tool_name` enum plus
+      # a permissive `arguments` object, with NO top-level combinator. LLM tool
+      # `input_schema` must have an object root: Anthropic and OpenAI reject
+      # `oneOf`/`allOf`/`anyOf` at the top level ("input_schema does not support
+      # oneOf, allOf, or anyOf at the top level"), and hosts routinely forward a
+      # facade's inputSchema straight to the model. The per-tool argument
+      # schemas therefore cannot be correlated to `tool_name` inline; they ride
+      # on the facade's `_meta` (:vendor_extension, see build_facade) for a
+      # client to expand, or are omitted entirely (:lazy) and enforced at
+      # dispatch by the target tool's own filter_input.
+      def facade_input_schema(tools, strategy)
+        arguments_description =
+          if strategy == :vendor_extension
+            'Arguments for the chosen tool; per-tool schemas are in this tool\'s _meta under "tool-input-schemas".'
+          else # :lazy
+            "Arguments for the chosen tool."
+          end
 
-        case strategy
-        when :discriminated_union
-          # Native JSON Schema; per-tool argument validation for free. Some
-          # strict tool-calling stacks reject a top-level oneOf — which is
-          # why this is selectable rather than the default.
-          {
-            oneOf: tools.map do |tool_class|
-              {
-                type: "object",
-                properties: {
-                  tool_name: { type: "string", const: tool_class.tool_name },
-                  arguments: tool_class.dynamic_input_schema(server_context: server_context)
-                },
-                required: %w[tool_name arguments]
-              }
-            end
-          }
-        else # :vendor_extension (default) and :lazy
-          # Standards-clean: a plain enum + permissive arguments object, with
-          # NO non-standard keys — valid for strict Zod clients and strict-mode
-          # LLM tool-calling. :vendor_extension additionally ships the per-tool
-          # schemas on the facade's `_meta` (see build_facade); :lazy ships
-          # nothing and relies on dispatch-time filter_input to enforce shapes.
-          arguments_description =
-            if strategy == :vendor_extension
-              'Arguments for the chosen tool; per-tool schemas are in this tool\'s _meta under "tool-input-schemas".'
-            else
-              "Arguments for the chosen tool."
-            end
-          {
-            type: "object",
-            properties: {
-              tool_name: { type: "string", enum: names },
-              arguments: {
-                type: "object",
-                description: arguments_description
-              }
-            },
-            required: %w[tool_name arguments]
-          }
-        end
-      end
-
-      # Resolve the configured strategy to a concrete one for THIS group.
-      # `:auto` keeps small groups rich (`:discriminated_union` — per-tool
-      # schemas inline and correlated to `tool_name`, which the model can use
-      # without the client expanding `_meta`, at trivial size for a few
-      # branches) and large groups compact (`:vendor_extension` — schemas on
-      # `_meta`, so a big group doesn't inflate the listing with a large
-      # `oneOf`). The cutoff is `auto_threshold` (tool count).
-      #: (Hash[Symbol, untyped], Array[singleton(McpAuthorization::Tool)]) -> Symbol
-      def resolve_strategy(config, tools)
-        strategy = config[:schema_strategy]
-        return strategy unless strategy == :auto
-
-        tools.length <= config[:auto_threshold] ? :discriminated_union : :vendor_extension
+        {
+          type: "object",
+          properties: {
+            tool_name: { type: "string", enum: tools.map(&:tool_name) },
+            arguments: { type: "object", description: arguments_description }
+          },
+          required: %w[tool_name arguments]
+        }
       end
 
       # Per-tool compiled input schemas keyed by tool_name, filtered for this
