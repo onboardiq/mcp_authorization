@@ -96,11 +96,7 @@ module McpAuthorization
         all_tools(server_context)
       when "tools/call"
         name = mcp_request_params[:name]
-        name ? Array(McpAuthorization::ToolRegistry.tool_class_for(
-          domain: params[:domain],
-          name: name,
-          server_context: server_context
-        )) : all_tools(server_context)
+        name ? Array(resolve_tool(name, server_context)) : all_tools(server_context)
       when "initialize", "ping", %r{\Anotifications/}
         []
       else
@@ -110,12 +106,34 @@ module McpAuthorization
       end
     end
 
+    # The single tool a tools/call needs. In a faceted domain the name is
+    # usually a facade ("orders_tools"); direct tool names still resolve so
+    # a client that learned a real tool name keeps working. Facade names
+    # cannot shadow real tools — FacadeBuilder raises on collision.
+    #: (String, untyped) -> singleton(MCP::Tool)?
+    def resolve_tool(name, server_context)
+      domain = params[:domain]
+      if McpAuthorization.config.faceted?(domain)
+        facade = McpAuthorization::ToolRegistry.facade_for(
+          domain: domain, name: name, server_context: server_context
+        )
+        return facade if facade
+      end
+      McpAuthorization::ToolRegistry.tool_class_for(
+        domain: domain, name: name, server_context: server_context
+      )
+    end
+
+    # Every tool the domain presents: grouped facades when the domain is
+    # faceted (see Configuration#facet_domain), the flat list otherwise.
     #: (untyped) -> Array[singleton(MCP::Tool)]
     def all_tools(server_context)
-      McpAuthorization::ToolRegistry.tool_classes_for(
-        domain: params[:domain],
-        server_context: server_context
-      )
+      domain = params[:domain]
+      if McpAuthorization.config.faceted?(domain)
+        McpAuthorization::ToolRegistry.facades_for(domain: domain, server_context: server_context)
+      else
+        McpAuthorization::ToolRegistry.tool_classes_for(domain: domain, server_context: server_context)
+      end
     end
 
     #: () -> untyped

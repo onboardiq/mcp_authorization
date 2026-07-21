@@ -360,6 +360,61 @@ Tag a tool with multiple domains to make it available in each:
 tags "operator", "recruiting"
 ```
 
+## Tool grouping (facades)
+
+As a domain grows into the hundreds of tools, a flat `tools/list` spends the
+selection prompt on call-time schemas instead of routing signal. A domain can
+opt into **grouped facades**: one tool per category, with a routing-only
+description and per-tool schemas deferred out of the listing.
+
+```ruby
+class ListOrdersTool < McpAuthorization::Tool
+  tags "admin"
+  category :orders                    # the group this tool belongs to
+  dynamic_contract OrderHandlers::List
+end
+
+McpAuthorization.configure do |config|
+  config.facet_domain :admin, group_by: :category
+
+  config.categories do
+    summary :orders,  "Create, inspect, and update orders and their line items."
+    summary :billing, "Invoices, payments, refunds, and billing profiles."
+  end
+end
+```
+
+`tools/list` for the domain then returns one facade per group the caller has
+at least one permitted tool in (`orders_tools`, `billing_tools`), each
+describing its tools with RBAC-filtered one-liners. Calling a facade names the
+inner tool and its arguments:
+
+```json
+{ "name": "orders_tools",
+  "arguments": { "tool_name": "update_order", "arguments": { "id": "o_1" } } }
+```
+
+Dispatch resolves the real tool through its normal call path — authorization,
+gating, and schema filtering apply exactly as if the tool had been called
+directly, and JSON-string argument blobs are coerced against the *target*
+tool's schema.
+
+Where per-tool argument schemas live is selectable per domain via
+`schema_strategy:`:
+
+- `:vendor_extension` (default) — `tool_name` enum plus an
+  `x-tool-input-schemas` map; inert to validators, readable by capable clients.
+- `:discriminated_union` — a `oneOf` of `{tool_name, arguments}` branches;
+  native JSON Schema, but some strict tool-calling stacks reject a top-level
+  `oneOf` (under `strict_schema` it is emitted as `anyOf`).
+- `:lazy` — names and one-liners only; argument shapes are enforced at
+  dispatch by the target tool.
+
+Uncategorized tools land in an `uncategorized` facade by default; pass
+`uncategorized: :error` to fail fast instead. Groups with zero permitted tools
+are hidden entirely, so a facade never advertises an empty `enum`. See
+`docs/designs/tool-grouping-facades.md` for the full design.
+
 ## RBS type syntax
 
 The `@rbs type` comments compile to JSON Schema:

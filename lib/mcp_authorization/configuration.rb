@@ -107,6 +107,23 @@ module McpAuthorization
     #: String?
     attr_accessor :tools_list_cache_redis_url
 
+    # Per-domain facet (tool-grouping) configuration, keyed by domain name.
+    # Each value is a Hash: { group_by:, schema_strategy:, uncategorized: }.
+    # Populated by +facet_domain+; read by ToolRegistry / FacadeBuilder.
+    # See docs/designs/tool-grouping-facades.md.
+    #: Hash[String, Hash[Symbol, untyped]]
+    attr_reader :faceted_domains
+
+    # Group summaries keyed by category symbol. Populated by +categories+.
+    #: Hash[Symbol, String]
+    attr_reader :category_summaries
+
+    # Schema strategies FacadeBuilder knows how to emit.
+    SCHEMA_STRATEGIES = %i[vendor_extension discriminated_union lazy].freeze #: Array[Symbol]
+
+    # Behaviors for a tool in a faceted domain that declares no +category+.
+    UNCATEGORIZED_MODES = %i[fallback error].freeze #: Array[Symbol]
+
     #: () -> void
     def initialize
       @server_name = "mcp-authorization"
@@ -122,6 +139,88 @@ module McpAuthorization
       @tools_list_cache_ttl = 3600
       @tools_list_cache_redis = nil
       @tools_list_cache_redis_url = nil
+      @faceted_domains = {}
+      @category_summaries = {}
+    end
+
+    # Present a domain as grouped facade tools instead of a flat tool list.
+    #
+    #   config.facet_domain :admin, group_by: :category
+    #   config.facet_domain :admin, group_by: :category,
+    #                        schema_strategy: :discriminated_union,
+    #                        uncategorized: :error
+    #
+    # +group_by+ is currently always +:category+ (the only grouping key the
+    # +category+ DSL provides); it is accepted explicitly so future grouping
+    # keys are an additive change rather than a behavior switch.
+    #
+    # +schema_strategy+ selects where per-tool argument schemas live in the
+    # facade's inputSchema — see SCHEMA_STRATEGIES. Defaults to the
+    # validator-inert +:vendor_extension+.
+    #
+    # +uncategorized+ controls what happens to a tool in this domain with no
+    # +category+: +:fallback+ (default) collects them into an +uncategorized+
+    # group; +:error+ raises at facade-build time.
+    #: (Symbol | String, group_by: Symbol, ?schema_strategy: Symbol, ?uncategorized: Symbol) -> void
+    def facet_domain(domain, group_by:, schema_strategy: :vendor_extension, uncategorized: :fallback)
+      unless SCHEMA_STRATEGIES.include?(schema_strategy)
+        raise ArgumentError, "unknown schema_strategy #{schema_strategy.inspect}; " \
+          "expected one of #{SCHEMA_STRATEGIES.inspect}"
+      end
+      unless UNCATEGORIZED_MODES.include?(uncategorized)
+        raise ArgumentError, "unknown uncategorized mode #{uncategorized.inspect}; " \
+          "expected one of #{UNCATEGORIZED_MODES.inspect}"
+      end
+
+      @faceted_domains[domain.to_s] = {
+        group_by: group_by.to_sym,
+        schema_strategy: schema_strategy,
+        uncategorized: uncategorized
+      }
+    end
+
+    # True when the given domain is presented as grouped facades.
+    #: (String) -> bool
+    def faceted?(domain)
+      @faceted_domains.key?(domain.to_s)
+    end
+
+    # Facet config Hash for a domain, or nil when the domain is not faceted.
+    #: (String) -> Hash[Symbol, untyped]?
+    def facet_config(domain)
+      @faceted_domains[domain.to_s]
+    end
+
+    # Declare one summary line per group. Evaluated in a small collector so
+    # the block reads declaratively:
+    #
+    #   config.categories do
+    #     summary :orders,  "Create, inspect, and update orders."
+    #     summary :billing, "Invoices, payments, refunds."
+    #   end
+    #: () { () -> void } -> void
+    def categories(&block)
+      collector = CategoryCollector.new(@category_summaries)
+      collector.instance_eval(&block)
+    end
+
+    # The group summary for a category, or nil when none was declared.
+    #: (Symbol) -> String?
+    def category_summary(category)
+      @category_summaries[category.to_sym]
+    end
+
+    # Collects +summary :key, "text"+ declarations into a shared hash.
+    class CategoryCollector
+      #: (Hash[Symbol, String]) -> void
+      def initialize(store)
+        @store = store
+      end
+
+      #: (Symbol | String, String) -> void
+      def summary(category, text)
+        @store[category.to_sym] = text
+      end
     end
   end
 end

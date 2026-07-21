@@ -4,6 +4,33 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-07-21
+
+Declarative tool grouping: a domain can present its tools as a small set of
+summarized category facades instead of a flat list, with per-tool schemas
+deferred out of the selection prompt. Opt-in and per-domain — domains not
+configured via `facet_domain` behave exactly as before. (#30)
+
+### Added
+- **`category :name` tool DSL.** A tool declares the group it belongs to when its domain is faceted; ignored in flat domains. An optional `summary:` kwarg serves single-tool groups; the central registry wins on conflict.
+
+- **`config.facet_domain :admin, group_by: :category`** — present a domain as grouped facades. `tools/list` returns one facade per group the caller has at least one permitted tool in (e.g. `orders_tools`), each with a routing-only description: the group summary plus RBAC-filtered one-liners of the tools the caller may actually invoke. Groups with zero permitted tools are hidden entirely, so a facade never advertises an empty `enum` (which fails JSON Schema draft-04 validation and can fail the whole `tools/list`).
+
+- **`config.categories { summary :orders, "..." }`** — one summary line per group, used as the facade description's lead.
+
+- **Selectable deferred-schema strategy** per domain via `schema_strategy:`. `:vendor_extension` (default) emits a `tool_name` enum plus an `x-tool-input-schemas` map — inert to every validator, readable by capable clients. `:discriminated_union` emits a `oneOf` of `{tool_name: const, arguments: schema}` branches — native JSON Schema, but selectable rather than default because some strict tool-calling stacks reject a top-level `oneOf` (under `strict_schema` it is sanitized to `anyOf`). `:lazy` carries names only; argument shapes are enforced at dispatch. In every strategy the per-tool schemas are compiled per caller, so permission-gated fields never appear in a facade a caller receives.
+
+- **Facade dispatch through the real call path.** A `tools/call` on a facade names the inner tool (`tool_name`) and its `arguments`. Dispatch checks the name against the set advertised to *this* caller, re-resolves the tool via `ToolRegistry.tool_class_for` — which re-runs `permitted?`, so gating is enforced even against a stale advertised set — and delegates to the tool's materialized `call`. Input filtering, output filtering, and `NotAuthorizedError` behave exactly as in a direct call, because it is the same code.
+
+- **Argument coercion against the target tool's schema.** MCP clients frequently serialize nested objects as JSON strings; the facade's generic `arguments: object` contract cannot know which fields to parse. Both the `arguments` blob itself and any top-level value whose *target* schema type is an object or array are JSON-parsed before dispatch, then stripped by the target's `filter_input` as usual.
+
+- **`uncategorized:` mode** — a tool without a `category` in a faceted domain lands in an `uncategorized` fallback group by default; `uncategorized: :error` raises instead for servers that want CI-enforced completeness. A facade name that collides with a real registered tool raises `FacadeNameCollisionError` rather than shadowing the tool.
+
+- **`ToolRegistry.facades_for(domain:, server_context:)` / `facade_for(domain:, name:, server_context:)`** — the facade analogues of `tool_classes_for` / `tool_class_for`. `McpController` routes `tools/list` on a faceted domain to facades and resolves facade names on `tools/call` (direct tool names still resolve, so a client that learned a real tool name keeps working).
+
+### Changed
+- **The `tools/list` cache defs digest now folds in facet configuration.** Each tool's `category`, every `facet_domain` setting, and every group summary participate in the digest, so toggling grouping, switching schema strategy, or rewording a summary invalidates cached listings the same way a gate or handler-source change does.
+
 ## [0.6.2] - 2026-07-01
 
 ### Fixed

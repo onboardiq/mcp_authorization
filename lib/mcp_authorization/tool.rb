@@ -37,6 +37,12 @@ module McpAuthorization
       #: Array[Hash[Symbol, untyped]]?
       attr_reader :_gates
 
+      #: Symbol?
+      attr_reader :_category
+
+      #: String?
+      attr_reader :_category_summary
+
       #: untyped
       attr_reader :_contract_handler
 
@@ -69,6 +75,22 @@ module McpAuthorization
       #: (*String | Array[String]) -> void
       def tags(*list)
         @_tags = list.flatten
+      end
+
+      # Declare the group this tool belongs to when its domain is faceted
+      # (see Configuration#facet_domain). Ignored in flat domains.
+      #
+      #   class ListOrdersTool < McpAuthorization::Tool
+      #     tags "admin"
+      #     category :orders
+      #   end
+      #
+      # The optional +summary:+ is a convenience for single-tool groups; the
+      # central +config.categories+ registry wins on conflict.
+      #: (Symbol | String, ?summary: String?) -> void
+      def category(name, summary: nil)
+        @_category = name.to_sym
+        @_category_summary = summary
       end
 
       # Declare a generic predicate gate that must pass for this tool to be
