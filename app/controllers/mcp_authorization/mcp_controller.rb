@@ -2,6 +2,13 @@ module McpAuthorization
   class McpController < ActionController::Base
     skip_forgery_protection
 
+    # Response header stamped on every cached tools/list path so hosts can log
+    # cache behavior: "hit" (served from the store), "miss" (compiled cold and
+    # stored), or "bypass" (compiled but not cached — cache had no key for this
+    # request, e.g. the domain's decision vocabulary isn't learned yet, or the
+    # response wasn't a cacheable result).
+    TOOLS_LIST_CACHE_HEADER = "X-MCP-Tools-List-Cache" #: String
+
     # POST/GET/DELETE /mcp/:domain
     #: () -> void
     def handle
@@ -48,6 +55,7 @@ module McpAuthorization
 
       key = McpAuthorization::Cache.tools_list_key(domain: domain, server_context: server_context)
       if key && (cached = McpAuthorization::Cache.store.get(key))
+        response.set_header(TOOLS_LIST_CACHE_HEADER, "hit")
         return render json: tools_list_envelope(cached)
       end
 
@@ -63,11 +71,17 @@ module McpAuthorization
       end
       result = parsed && parsed["result"]
       unless result
+        response.set_header(TOOLS_LIST_CACHE_HEADER, "bypass")
         return render json: body.first, status: status # error / unexpected shape — don't cache
       end
 
       store_key = McpAuthorization::Cache.tools_list_key(domain: domain, server_context: server_context)
-      McpAuthorization::Cache.store.set(store_key, result, ttl: McpAuthorization::Cache.ttl) if store_key
+      if store_key
+        McpAuthorization::Cache.store.set(store_key, result, ttl: McpAuthorization::Cache.ttl)
+        response.set_header(TOOLS_LIST_CACHE_HEADER, "miss")
+      else
+        response.set_header(TOOLS_LIST_CACHE_HEADER, "bypass")
+      end
       render json: tools_list_envelope(result), status: status
     end
 
@@ -96,11 +110,7 @@ module McpAuthorization
         all_tools(server_context)
       when "tools/call"
         name = mcp_request_params[:name]
-        name ? Array(McpAuthorization::ToolRegistry.tool_class_for(
-          domain: params[:domain],
-          name: name,
-          server_context: server_context
-        )) : all_tools(server_context)
+        name ? Array(resolve_tool(name, server_context)) : all_tools(server_context)
       when "initialize", "ping", %r{\Anotifications/}
         []
       else
@@ -110,12 +120,34 @@ module McpAuthorization
       end
     end
 
+    # The single tool a tools/call needs. In a faceted domain the name is
+    # usually a facade ("orders_tools"); direct tool names still resolve so
+    # a client that learned a real tool name keeps working. Facade names
+    # cannot shadow real tools — FacadeBuilder raises on collision.
+    #: (String, untyped) -> singleton(MCP::Tool)?
+    def resolve_tool(name, server_context)
+      domain = params[:domain]
+      if McpAuthorization.config.faceted?(domain)
+        facade = McpAuthorization::ToolRegistry.facade_for(
+          domain: domain, name: name, server_context: server_context
+        )
+        return facade if facade
+      end
+      McpAuthorization::ToolRegistry.tool_class_for(
+        domain: domain, name: name, server_context: server_context
+      )
+    end
+
+    # Every tool the domain presents: grouped facades when the domain is
+    # faceted (see Configuration#facet_domain), the flat list otherwise.
     #: (untyped) -> Array[singleton(MCP::Tool)]
     def all_tools(server_context)
-      McpAuthorization::ToolRegistry.tool_classes_for(
-        domain: params[:domain],
-        server_context: server_context
-      )
+      domain = params[:domain]
+      if McpAuthorization.config.faceted?(domain)
+        McpAuthorization::ToolRegistry.facades_for(domain: domain, server_context: server_context)
+      else
+        McpAuthorization::ToolRegistry.tool_classes_for(domain: domain, server_context: server_context)
+      end
     end
 
     #: () -> untyped

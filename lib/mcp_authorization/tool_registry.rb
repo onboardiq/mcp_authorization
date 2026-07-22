@@ -90,6 +90,24 @@ module McpAuthorization
         tool_class.materialize_for(server_context)
       end
 
+      # Grouped facade tools for a faceted domain — one synthetic MCP::Tool
+      # per non-empty category the caller has at least one permitted tool
+      # in. Returns [] for domains not configured via facet_domain.
+      # See FacadeBuilder and docs/designs/tool-grouping-facades.md.
+      #: (domain: String, server_context: untyped) -> Array[singleton(MCP::Tool)]
+      def facades_for(domain:, server_context:)
+        McpAuthorization::FacadeBuilder.facades_for(domain: domain, server_context: server_context)
+      end
+
+      # A single facade by name within a faceted domain, or nil when the
+      # domain is not faceted or the name matches no non-empty group for
+      # this caller. The facade analogue of tool_class_for — a tools/call
+      # targeting one facade should not build every facade in the domain.
+      #: (domain: String, name: String, server_context: untyped) -> singleton(MCP::Tool)?
+      def facade_for(domain:, name:, server_context:)
+        McpAuthorization::FacadeBuilder.facade_for(domain: domain, name: name, server_context: server_context)
+      end
+
       # Look up a tool by its MCP tool name across all domains.
       #: (String) -> singleton(McpAuthorization::Tool)?
       def find_tool(name)

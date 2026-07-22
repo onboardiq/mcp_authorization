@@ -197,10 +197,20 @@ module McpAuthorization
             tool_class.tool_name.to_s,
             (tool_class._gates || []).map { |g| [g[:name].to_s, g[:value].to_s] },
             handler&.name.to_s,
-            source
+            source,
+            tool_class._category.to_s
           ]
         end.sort_by(&:first)
-        Digest::SHA256.hexdigest(JSON.generate(sigs))[0, 16]
+        # Facet config and group summaries shape the tools/list of a faceted
+        # domain the same way a gate edit shapes a flat one — toggling
+        # grouping, switching schema strategy, or rewording a summary must
+        # invalidate cached listings.
+        config = McpAuthorization.config
+        facets = config.faceted_domains.sort.map do |domain, fc|
+          [domain, fc.sort_by { |k, _| k.to_s }.map { |k, v| [k.to_s, v.to_s] }]
+        end
+        summaries = config.category_summaries.sort_by { |k, _| k.to_s }.map { |k, v| [k.to_s, v] }
+        Digest::SHA256.hexdigest(JSON.generate([sigs, facets, summaries]))[0, 16]
       rescue StandardError
         # If anything about introspection fails, fall back to a process-stable
         # digest so caching still works within a boot (just not across deploys

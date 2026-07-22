@@ -4,6 +4,35 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-07-21
+
+Declarative tool grouping: a domain can present its tools as a small set of
+summarized category facades instead of a flat list, with per-tool schemas
+deferred out of the selection prompt. Opt-in and per-domain — domains not
+configured via `facet_domain` behave exactly as before. (#30)
+
+### Added
+- **`category :name` tool DSL.** A tool declares the group it belongs to when its domain is faceted; ignored in flat domains. An optional `summary:` kwarg serves single-tool groups; the central registry wins on conflict.
+
+- **`config.facet_domain :admin, group_by: :category`** — present a domain as grouped facades. `tools/list` returns one facade per group the caller has at least one permitted tool in (e.g. `orders_tools`), each with a routing-only description: the group summary plus RBAC-filtered one-liners of the tools the caller may actually invoke. Groups with zero permitted tools are hidden entirely, so a facade never advertises an empty `enum` (which fails JSON Schema draft-04 validation and can fail the whole `tools/list`).
+
+- **`config.categories { summary :orders, "..." }`** — one summary line per group, used as the facade description's lead.
+
+- **`facet_domain(..., facade_suffix:)`** — override the token appended to a category to form its facade tool name. Defaults to `"tools"` (`orders_tools`); e.g. `facade_suffix: "hire"` exposes `orders_hire`. Must be a lowercase identifier fragment (`[a-z0-9_]`). The suffix is folded into the tools/list cache digest, so changing it invalidates cached listings.
+
+- **Deferred-schema strategy** per domain via `schema_strategy:`. The facade `inputSchema` is always a flat object (`tool_name` enum + permissive `arguments`): an LLM tool `input_schema` must have an object root — Anthropic and OpenAI reject `oneOf`/`allOf`/`anyOf` at the top level — and hosts forward a facade's `inputSchema` straight to the model, so a correlated inline shape (each `tool_name` tied to its argument schema) is not expressible and is not offered. `:vendor_extension` (default) carries the per-tool schemas on the facade's `_meta` (key `"tool-input-schemas"`) — the MCP-sanctioned extension channel that SDKs preserve and that is never forwarded to the model as `input_schema` — for a client that wants to expand the facade. `:lazy` carries names only; argument shapes are enforced at dispatch. In both strategies the per-tool schemas are compiled per caller, so permission-gated fields never appear in a facade a caller receives.
+
+- **Facade dispatch through the real call path.** A `tools/call` on a facade names the inner tool (`tool_name`) and its `arguments`. Dispatch checks the name against the set advertised to *this* caller, re-resolves the tool via `ToolRegistry.tool_class_for` — which re-runs `permitted?`, so gating is enforced even against a stale advertised set — and delegates to the tool's materialized `call`. Input filtering, output filtering, and `NotAuthorizedError` behave exactly as in a direct call, because it is the same code.
+
+- **Argument coercion against the target tool's schema.** MCP clients frequently serialize nested objects as JSON strings; the facade's generic `arguments: object` contract cannot know which fields to parse. Both the `arguments` blob itself and any top-level value whose *target* schema type is an object or array are JSON-parsed before dispatch, then stripped by the target's `filter_input` as usual.
+
+- **`uncategorized:` mode** — a tool without a `category` in a faceted domain lands in an `uncategorized` fallback group by default; `uncategorized: :error` raises instead for servers that want CI-enforced completeness. A facade name that collides with a real registered tool raises `FacadeNameCollisionError` rather than shadowing the tool.
+
+- **`ToolRegistry.facades_for(domain:, server_context:)` / `facade_for(domain:, name:, server_context:)`** — the facade analogues of `tool_classes_for` / `tool_class_for`. `McpController` routes `tools/list` on a faceted domain to facades and resolves facade names on `tools/call` (direct tool names still resolve, so a client that learned a real tool name keeps working).
+
+### Changed
+- **The `tools/list` cache defs digest now folds in facet configuration.** Each tool's `category`, every `facet_domain` setting, and every group summary participate in the digest, so toggling grouping, switching schema strategy, or rewording a summary invalidates cached listings the same way a gate or handler-source change does.
+
 ## [0.6.2] - 2026-07-01
 
 ### Fixed

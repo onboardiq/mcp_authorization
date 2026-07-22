@@ -5,10 +5,13 @@ module McpAuthorization
     attr_reader _permission: Symbol?
     attr_reader _tags: Array[String]?
     attr_reader _gates: Array[Hash[Symbol, untyped]]?
+    attr_reader _category: Symbol?
+    attr_reader _category_summary: String?
     attr_reader _contract_handler: untyped
     def self.inherited: (Class) -> void
     def self.authorization: (Symbol) -> void
     def self.tags: (*String | Array[String]) -> void
+    def self.category: (Symbol | String, ?summary: String?) -> void
     def self.gate: (Symbol, untyped) -> void
     def self.read_only!: () -> void
     def self.destructive!: () -> void

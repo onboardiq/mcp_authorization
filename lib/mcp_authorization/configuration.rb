@@ -107,6 +107,40 @@ module McpAuthorization
     #: String?
     attr_accessor :tools_list_cache_redis_url
 
+    # Per-domain facet (tool-grouping) configuration, keyed by domain name.
+    # Each value is a Hash: { group_by:, schema_strategy:, uncategorized:,
+    # facade_suffix: }.
+    # Populated by +facet_domain+; read by ToolRegistry / FacadeBuilder.
+    # See docs/designs/tool-grouping-facades.md.
+    #: Hash[String, Hash[Symbol, untyped]]
+    attr_reader :faceted_domains
+
+    # Group summaries keyed by category symbol. Populated by +categories+.
+    #: Hash[Symbol, String]
+    attr_reader :category_summaries
+
+    # Schema strategies FacadeBuilder knows how to emit.
+    # LLM tool `input_schema` must have an object root — Anthropic and OpenAI
+    # reject `oneOf`/`allOf`/`anyOf` at the top level — so both facade
+    # strategies keep a flat object root and differ only in where the per-tool
+    # schemas go: `:vendor_extension` carries them on the facade's `_meta`;
+    # `:lazy` omits them (enforced at dispatch). A correlated inline shape
+    # (tool_name → its argument schema) would require a root combinator and is
+    # therefore not offered.
+    SCHEMA_STRATEGIES = %i[vendor_extension lazy].freeze #: Array[Symbol]
+
+    # Behaviors for a tool in a faceted domain that declares no +category+.
+    UNCATEGORIZED_MODES = %i[fallback error].freeze #: Array[Symbol]
+
+    # Default suffix appended to a category to form its facade tool name
+    # (e.g. category +:orders+ → +orders_tools+). Overridable per domain via
+    # +facet_domain(..., facade_suffix:)+.
+    DEFAULT_FACADE_SUFFIX = "tools" #: String
+
+    # A facade suffix must be a bare identifier fragment so the derived facade
+    # name (+"#{category}_#{suffix}"+) stays a valid MCP tool name.
+    FACADE_SUFFIX_FORMAT = /\A[a-z0-9]+(?:_[a-z0-9]+)*\z/ #: Regexp
+
     #: () -> void
     def initialize
       @server_name = "mcp-authorization"
@@ -122,6 +156,101 @@ module McpAuthorization
       @tools_list_cache_ttl = 3600
       @tools_list_cache_redis = nil
       @tools_list_cache_redis_url = nil
+      @faceted_domains = {}
+      @category_summaries = {}
+    end
+
+    # Present a domain as grouped facade tools instead of a flat tool list.
+    #
+    #   config.facet_domain :admin, group_by: :category
+    #   config.facet_domain :admin, group_by: :category,
+    #                        schema_strategy: :lazy,
+    #                        uncategorized: :error
+    #
+    # +group_by+ is currently always +:category+ (the only grouping key the
+    # +category+ DSL provides); it is accepted explicitly so future grouping
+    # keys are an additive change rather than a behavior switch.
+    #
+    # +schema_strategy+ selects where the per-tool argument schemas go (the
+    # facade inputSchema is a flat object either way — see SCHEMA_STRATEGIES).
+    # +:vendor_extension+ (default) carries them on the facade's +_meta+;
+    # +:lazy+ omits them.
+    #
+    # +uncategorized+ controls what happens to a tool in this domain with no
+    # +category+: +:fallback+ (default) collects them into an +uncategorized+
+    # group; +:error+ raises at facade-build time.
+    #
+    # +facade_suffix+ is the token appended to a category to form its facade
+    # tool name — category +:orders+ → +orders_#{suffix}+. Defaults to
+    # +"tools"+ (+orders_tools+). Must be a lowercase identifier fragment
+    # (+[a-z0-9_]+) so the derived name stays a valid MCP tool name.
+    #: (Symbol | String, group_by: Symbol, ?schema_strategy: Symbol, ?uncategorized: Symbol, ?facade_suffix: String | Symbol) -> void
+    def facet_domain(domain, group_by:, schema_strategy: :vendor_extension, uncategorized: :fallback, facade_suffix: DEFAULT_FACADE_SUFFIX)
+      unless SCHEMA_STRATEGIES.include?(schema_strategy)
+        raise ArgumentError, "unknown schema_strategy #{schema_strategy.inspect}; " \
+          "expected one of #{SCHEMA_STRATEGIES.inspect}"
+      end
+      unless UNCATEGORIZED_MODES.include?(uncategorized)
+        raise ArgumentError, "unknown uncategorized mode #{uncategorized.inspect}; " \
+          "expected one of #{UNCATEGORIZED_MODES.inspect}"
+      end
+
+      suffix = facade_suffix.to_s
+      unless FACADE_SUFFIX_FORMAT.match?(suffix)
+        raise ArgumentError, "invalid facade_suffix #{facade_suffix.inspect}; " \
+          "expected a lowercase identifier fragment matching #{FACADE_SUFFIX_FORMAT.inspect}"
+      end
+
+      @faceted_domains[domain.to_s] = {
+        group_by: group_by.to_sym,
+        schema_strategy: schema_strategy,
+        uncategorized: uncategorized,
+        facade_suffix: suffix
+      }
+    end
+
+    # True when the given domain is presented as grouped facades.
+    #: (String) -> bool
+    def faceted?(domain)
+      @faceted_domains.key?(domain.to_s)
+    end
+
+    # Facet config Hash for a domain, or nil when the domain is not faceted.
+    #: (String) -> Hash[Symbol, untyped]?
+    def facet_config(domain)
+      @faceted_domains[domain.to_s]
+    end
+
+    # Declare one summary line per group. Evaluated in a small collector so
+    # the block reads declaratively:
+    #
+    #   config.categories do
+    #     summary :orders,  "Create, inspect, and update orders."
+    #     summary :billing, "Invoices, payments, refunds."
+    #   end
+    #: () { () -> void } -> void
+    def categories(&block)
+      collector = CategoryCollector.new(@category_summaries)
+      collector.instance_eval(&block)
+    end
+
+    # The group summary for a category, or nil when none was declared.
+    #: (Symbol) -> String?
+    def category_summary(category)
+      @category_summaries[category.to_sym]
+    end
+
+    # Collects +summary :key, "text"+ declarations into a shared hash.
+    class CategoryCollector
+      #: (Hash[Symbol, String]) -> void
+      def initialize(store)
+        @store = store
+      end
+
+      #: (Symbol | String, String) -> void
+      def summary(category, text)
+        @store[category.to_sym] = text
+      end
     end
   end
 end

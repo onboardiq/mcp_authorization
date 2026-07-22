@@ -360,6 +360,71 @@ Tag a tool with multiple domains to make it available in each:
 tags "operator", "recruiting"
 ```
 
+## Tool grouping (facades)
+
+As a domain grows into the hundreds of tools, a flat `tools/list` spends the
+selection prompt on call-time schemas instead of routing signal. A domain can
+opt into **grouped facades**: one tool per category, with a routing-only
+description and per-tool schemas deferred out of the listing.
+
+```ruby
+class ListOrdersTool < McpAuthorization::Tool
+  tags "admin"
+  category :orders                    # the group this tool belongs to
+  dynamic_contract OrderHandlers::List
+end
+
+McpAuthorization.configure do |config|
+  config.facet_domain :admin, group_by: :category
+
+  config.categories do
+    summary :orders,  "Create, inspect, and update orders and their line items."
+    summary :billing, "Invoices, payments, refunds, and billing profiles."
+  end
+end
+```
+
+`tools/list` for the domain then returns one facade per group the caller has
+at least one permitted tool in (`orders_tools`, `billing_tools`), each
+describing its tools with RBAC-filtered one-liners. Calling a facade names the
+inner tool and its arguments:
+
+```json
+{ "name": "orders_tools",
+  "arguments": { "tool_name": "update_order", "arguments": { "id": "o_1" } } }
+```
+
+Dispatch resolves the real tool through its normal call path — authorization,
+gating, and schema filtering apply exactly as if the tool had been called
+directly, and JSON-string argument blobs are coerced against the *target*
+tool's schema.
+
+The facade `inputSchema` is always a flat object (a `tool_name` enum plus a
+permissive `arguments` object). It has to be: an LLM tool `input_schema` must
+have an object root — Anthropic and OpenAI reject `oneOf`/`allOf`/`anyOf` at the
+top level — and hosts routinely forward a facade's `inputSchema` straight to the
+model. A correlated inline shape (each `tool_name` tied to its own argument
+schema) would need a root combinator, so it is not offered. `schema_strategy:`
+therefore only chooses where the per-tool schemas go:
+
+- `:vendor_extension` (default) — the per-tool schemas are carried on the
+  facade's `_meta` (key `"tool-input-schemas"`). `_meta` is the MCP-sanctioned
+  extension channel: SDKs preserve it and it is never forwarded to the model as
+  the tool `input_schema`, so the schemas stay available in-band for a client
+  that wants to expand the facade, without touching `inputSchema`.
+- `:lazy` — names and one-liners only; argument shapes are enforced at dispatch
+  by the target tool's own `filter_input`.
+
+Uncategorized tools land in an `uncategorized` facade by default; pass
+`uncategorized: :error` to fail fast instead. Groups with zero permitted tools
+are hidden entirely, so a facade never advertises an empty `enum`.
+
+Facade names are `#{category}_tools` by default. Override the suffix per domain
+with `facade_suffix:` — e.g. `config.facet_domain :admin, group_by: :category,
+facade_suffix: "hire"` exposes `orders_hire`, `billing_hire`. The suffix must be
+a lowercase identifier fragment (`[a-z0-9_]`) so the derived name stays a valid
+MCP tool name. See `docs/designs/tool-grouping-facades.md` for the full design.
+
 ## RBS type syntax
 
 The `@rbs type` comments compile to JSON Schema:

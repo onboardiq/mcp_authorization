@@ -30,6 +30,11 @@ module MCP
         @output_schema
       end
 
+      def meta(value = nil)
+        @meta = value if value
+        @meta
+      end
+
       def annotations(**hints)
         @annotations = hints
       end
@@ -52,11 +57,14 @@ module McpAuthorization
   end
 
   module DSL; end
-
-  class ToolRegistry
-    def self.register(_); end
-  end
 end
+
+# Load the real ToolRegistry (a plain class — no superclass to mismatch).
+# Tool's inherited hook registers every subclass here; facade tests exercise
+# the real grouping/lookup paths (tools_by_domain, tool_class_for, find_tool).
+# Tests that define tools must use per-test-unique domain tags so the shared
+# registry never routes one file's tools into another file's assertions.
+require_relative "../lib/mcp_authorization/tool_registry"
 
 # Load the real Tool class once. Tests that need to subclass it
 # (e.g. materialize_for_test.rb) get the real superclass chain; tests
