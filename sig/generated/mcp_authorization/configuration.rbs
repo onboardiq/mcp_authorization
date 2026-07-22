@@ -18,7 +18,7 @@ module McpAuthorization
     attr_reader faceted_domains: Hash[String, Hash[Symbol, untyped]]
     attr_reader category_summaries: Hash[Symbol, String]
     def initialize: () -> void
-    def facet_domain: (Symbol | String, group_by: Symbol, ?schema_strategy: Symbol, ?uncategorized: Symbol) -> void
+    def facet_domain: (Symbol | String, group_by: Symbol, ?schema_strategy: Symbol, ?uncategorized: Symbol, ?facade_suffix: String | Symbol) -> void
     def faceted?: (String) -> bool
     def facet_config: (String) -> Hash[Symbol, untyped]?
     def categories: () { () -> void } -> void

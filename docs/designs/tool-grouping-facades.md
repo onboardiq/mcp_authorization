@@ -49,6 +49,7 @@ McpAuthorization.configure do |config|
     group_by: :category,
     schema_strategy: :vendor_extension    # :vendor_extension (default) | :discriminated_union | :lazy
     # uncategorized: :fallback             # :fallback (default) | :error
+    # facade_suffix: "tools"               # facade name = "#{category}_#{suffix}" (default "tools")
 
   config.categories do
     summary :orders,  "Create, inspect, and update orders and their line items."

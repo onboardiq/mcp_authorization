@@ -51,15 +51,18 @@ module McpAuthorization
         return nil unless config
 
         group_tools(domain, server_context, config).each do |category, tools|
-          return build_facade(domain, category, tools, server_context, config) if facade_name(category) == name
+          return build_facade(domain, category, tools, server_context, config) if facade_name(category, config) == name
         end
         nil
       end
 
-      # The MCP tool name a category's facade is exposed under.
-      #: (Symbol) -> String
-      def facade_name(category)
-        "#{category}_tools"
+      # The MCP tool name a category's facade is exposed under. The suffix is
+      # per-domain (facet config +facade_suffix+, default +"tools"+): category
+      # +:orders+ → +orders_tools+ (or +orders_hire+, etc.).
+      #: (Symbol, Hash[Symbol, untyped]) -> String
+      def facade_name(category, config)
+        suffix = config[:facade_suffix] || Configuration::DEFAULT_FACADE_SUFFIX
+        "#{category}_#{suffix}"
       end
 
       private
@@ -87,15 +90,15 @@ module McpAuthorization
         end
 
         sorted = groups.sort_by { |category, _| category.to_s }
-        sorted.each { |category, _| check_name_collision!(domain, category, candidates) }
+        sorted.each { |category, _| check_name_collision!(domain, category, candidates, config) }
         sorted
       end
 
       # A facade name shadowing a real tool would make that tool
       # unreachable by name in this domain — fail loudly instead.
-      #: (String, Symbol, Array[singleton(McpAuthorization::Tool)]) -> void
-      def check_name_collision!(domain, category, candidates)
-        name = facade_name(category)
+      #: (String, Symbol, Array[singleton(McpAuthorization::Tool)], Hash[Symbol, untyped]) -> void
+      def check_name_collision!(domain, category, candidates, config)
+        name = facade_name(category, config)
         collision = candidates.find { |tc| tc.tool_name == name }
         return unless collision
 
@@ -109,7 +112,7 @@ module McpAuthorization
       # materialization shape Tool.materialize_for uses for real tools.
       #: (String, Symbol, Array[singleton(McpAuthorization::Tool)], untyped, Hash[Symbol, untyped]) -> singleton(MCP::Tool)
       def build_facade(domain, category, tools, server_context, config)
-        name = facade_name(category)
+        name = facade_name(category, config)
         desc = facade_description(category, tools, server_context)
         strategy = config[:schema_strategy]
         schema = facade_input_schema(tools, strategy)

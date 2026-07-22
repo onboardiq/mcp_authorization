@@ -417,8 +417,13 @@ therefore only chooses where the per-tool schemas go:
 
 Uncategorized tools land in an `uncategorized` facade by default; pass
 `uncategorized: :error` to fail fast instead. Groups with zero permitted tools
-are hidden entirely, so a facade never advertises an empty `enum`. See
-`docs/designs/tool-grouping-facades.md` for the full design.
+are hidden entirely, so a facade never advertises an empty `enum`.
+
+Facade names are `#{category}_tools` by default. Override the suffix per domain
+with `facade_suffix:` — e.g. `config.facet_domain :admin, group_by: :category,
+facade_suffix: "hire"` exposes `orders_hire`, `billing_hire`. The suffix must be
+a lowercase identifier fragment (`[a-z0-9_]`) so the derived name stays a valid
+MCP tool name. See `docs/designs/tool-grouping-facades.md` for the full design.
 
 ## RBS type syntax
 

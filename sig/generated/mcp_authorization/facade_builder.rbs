@@ -4,9 +4,9 @@ module McpAuthorization
   class FacadeBuilder
     def self.facades_for: (domain: String, server_context: untyped) -> Array[singleton(MCP::Tool)]
     def self.facade_for: (domain: String, name: String, server_context: untyped) -> singleton(MCP::Tool)?
-    def self.facade_name: (Symbol) -> String
+    def self.facade_name: (Symbol, Hash[Symbol, untyped]) -> String
     def self.group_tools: (String, untyped, Hash[Symbol, untyped]) -> Array[[Symbol, Array[singleton(McpAuthorization::Tool)]]]
-    def self.check_name_collision!: (String, Symbol, Array[singleton(McpAuthorization::Tool)]) -> void
+    def self.check_name_collision!: (String, Symbol, Array[singleton(McpAuthorization::Tool)], Hash[Symbol, untyped]) -> void
     def self.build_facade: (String, Symbol, Array[singleton(McpAuthorization::Tool)], untyped, Hash[Symbol, untyped]) -> singleton(MCP::Tool)
     def self.facade_description: (Symbol, Array[singleton(McpAuthorization::Tool)], untyped) -> String
     def self.child_schema_map: (Array[singleton(McpAuthorization::Tool)], untyped) -> Hash[String, untyped]

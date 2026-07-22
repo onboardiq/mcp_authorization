@@ -108,7 +108,8 @@ module McpAuthorization
     attr_accessor :tools_list_cache_redis_url
 
     # Per-domain facet (tool-grouping) configuration, keyed by domain name.
-    # Each value is a Hash: { group_by:, schema_strategy:, uncategorized: }.
+    # Each value is a Hash: { group_by:, schema_strategy:, uncategorized:,
+    # facade_suffix: }.
     # Populated by +facet_domain+; read by ToolRegistry / FacadeBuilder.
     # See docs/designs/tool-grouping-facades.md.
     #: Hash[String, Hash[Symbol, untyped]]
@@ -130,6 +131,15 @@ module McpAuthorization
 
     # Behaviors for a tool in a faceted domain that declares no +category+.
     UNCATEGORIZED_MODES = %i[fallback error].freeze #: Array[Symbol]
+
+    # Default suffix appended to a category to form its facade tool name
+    # (e.g. category +:orders+ → +orders_tools+). Overridable per domain via
+    # +facet_domain(..., facade_suffix:)+.
+    DEFAULT_FACADE_SUFFIX = "tools" #: String
+
+    # A facade suffix must be a bare identifier fragment so the derived facade
+    # name (+"#{category}_#{suffix}"+) stays a valid MCP tool name.
+    FACADE_SUFFIX_FORMAT = /\A[a-z0-9]+(?:_[a-z0-9]+)*\z/ #: Regexp
 
     #: () -> void
     def initialize
@@ -169,8 +179,13 @@ module McpAuthorization
     # +uncategorized+ controls what happens to a tool in this domain with no
     # +category+: +:fallback+ (default) collects them into an +uncategorized+
     # group; +:error+ raises at facade-build time.
-    #: (Symbol | String, group_by: Symbol, ?schema_strategy: Symbol, ?uncategorized: Symbol) -> void
-    def facet_domain(domain, group_by:, schema_strategy: :vendor_extension, uncategorized: :fallback)
+    #
+    # +facade_suffix+ is the token appended to a category to form its facade
+    # tool name — category +:orders+ → +orders_#{suffix}+. Defaults to
+    # +"tools"+ (+orders_tools+). Must be a lowercase identifier fragment
+    # (+[a-z0-9_]+) so the derived name stays a valid MCP tool name.
+    #: (Symbol | String, group_by: Symbol, ?schema_strategy: Symbol, ?uncategorized: Symbol, ?facade_suffix: String | Symbol) -> void
+    def facet_domain(domain, group_by:, schema_strategy: :vendor_extension, uncategorized: :fallback, facade_suffix: DEFAULT_FACADE_SUFFIX)
       unless SCHEMA_STRATEGIES.include?(schema_strategy)
         raise ArgumentError, "unknown schema_strategy #{schema_strategy.inspect}; " \
           "expected one of #{SCHEMA_STRATEGIES.inspect}"
@@ -180,10 +195,17 @@ module McpAuthorization
           "expected one of #{UNCATEGORIZED_MODES.inspect}"
       end
 
+      suffix = facade_suffix.to_s
+      unless FACADE_SUFFIX_FORMAT.match?(suffix)
+        raise ArgumentError, "invalid facade_suffix #{facade_suffix.inspect}; " \
+          "expected a lowercase identifier fragment matching #{FACADE_SUFFIX_FORMAT.inspect}"
+      end
+
       @faceted_domains[domain.to_s] = {
         group_by: group_by.to_sym,
         schema_strategy: schema_strategy,
-        uncategorized: uncategorized
+        uncategorized: uncategorized,
+        facade_suffix: suffix
       }
     end
 

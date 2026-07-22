@@ -188,6 +188,38 @@ class FacadeTest < Minitest::Test
     end
   end
 
+  def test_facet_domain_rejects_invalid_facade_suffix
+    assert_raises(ArgumentError) do
+      McpAuthorization.config.facet_domain(domain, group_by: :category, facade_suffix: "bad suffix")
+    end
+    assert_raises(ArgumentError) do
+      McpAuthorization.config.facet_domain(domain, group_by: :category, facade_suffix: "")
+    end
+  end
+
+  def test_facade_suffix_defaults_to_tools
+    define_standard_tools
+    facet!
+    facades = FB.facades_for(domain: domain, server_context: full_ctx)
+    assert_equal ["billing_tools", "widgets_tools"], facades.map(&:tool_name).sort
+  end
+
+  def test_facade_suffix_overrides_facade_names
+    define_standard_tools
+    facet!(facade_suffix: "hire")
+    facades = FB.facades_for(domain: domain, server_context: full_ctx)
+    assert_equal ["billing_hire", "widgets_hire"], facades.map(&:tool_name).sort
+  end
+
+  def test_facade_for_resolves_custom_suffix_name
+    define_standard_tools
+    facet!(facade_suffix: "hire")
+    facade = FB.facade_for(domain: domain, name: "widgets_hire", server_context: full_ctx)
+    assert_equal "widgets_hire", facade.tool_name
+    # the old suffix no longer resolves
+    assert_nil FB.facade_for(domain: domain, name: "widgets_tools", server_context: full_ctx)
+  end
+
   # --------------------------------------------------------------------------
   # Grouping + RBAC-filtered advertisement
   # --------------------------------------------------------------------------
