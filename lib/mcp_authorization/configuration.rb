@@ -132,6 +132,11 @@ module McpAuthorization
     # Behaviors for a tool in a faceted domain that declares no +category+.
     UNCATEGORIZED_MODES = %i[fallback error].freeze #: Array[Symbol]
 
+    # Grouping keys +facet_domain+ knows how to group by. Only +:category+
+    # exists today (the +category+ DSL is the only grouping key); accepted
+    # explicitly so a future key is an additive, validated change.
+    GROUP_BY_KEYS = %i[category].freeze #: Array[Symbol]
+
     # Default suffix appended to a category to form its facade tool name
     # (e.g. category +:orders+ → +orders_tools+). Overridable per domain via
     # +facet_domain(..., facade_suffix:)+.
@@ -186,6 +191,10 @@ module McpAuthorization
     # (+[a-z0-9_]+) so the derived name stays a valid MCP tool name.
     #: (Symbol | String, group_by: Symbol, ?schema_strategy: Symbol, ?uncategorized: Symbol, ?facade_suffix: String | Symbol) -> void
     def facet_domain(domain, group_by:, schema_strategy: :vendor_extension, uncategorized: :fallback, facade_suffix: DEFAULT_FACADE_SUFFIX)
+      unless GROUP_BY_KEYS.include?(group_by.to_sym)
+        raise ArgumentError, "unknown group_by #{group_by.inspect}; " \
+          "expected one of #{GROUP_BY_KEYS.inspect}"
+      end
       unless SCHEMA_STRATEGIES.include?(schema_strategy)
         raise ArgumentError, "unknown schema_strategy #{schema_strategy.inspect}; " \
           "expected one of #{SCHEMA_STRATEGIES.inspect}"

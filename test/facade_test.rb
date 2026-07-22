@@ -323,7 +323,9 @@ class FacadeTest < Minitest::Test
   def test_vendor_extension_schema_shape
     define_standard_tools
     facet! # default strategy
-    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: full_ctx)
+    # _meta is a tools/list concern, so build via facades_for (the listing
+    # path), not facade_for (dispatch, which omits _meta by design).
+    facade = FB.facades_for(domain: domain, server_context: full_ctx).find { |f| f.tool_name == "widgets_tools" }
     schema = facade.input_schema
 
     assert_equal "object", schema[:type]
@@ -347,11 +349,26 @@ class FacadeTest < Minitest::Test
     define_standard_tools
     facet!
     ctx = StubContext.new([:view_widgets, :manage_widgets]) # not :admin
-    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
+    facade = FB.facades_for(domain: domain, server_context: ctx).find { |f| f.tool_name == "widgets_tools" }
 
     update_schema = facade.meta["tool-input-schemas"]["update_widget_#{domain}"]
     refute update_schema[:properties].key?(:force),
       "@requires(:admin) field must be filtered out of the deferred schema for non-admins"
+  end
+
+  # The dispatch path (facade_for) must NOT build the _meta per-tool schema map
+  # — nothing on a tools/call reads it, and compiling it would recompile every
+  # tool in the group on each call (the 0.7.1 perf fix).
+  def test_facade_for_dispatch_omits_meta_schema_map
+    define_standard_tools
+    facet! # :vendor_extension
+    dispatch_facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: full_ctx)
+    assert_nil dispatch_facade.meta,
+      "facade_for (dispatch) must omit the _meta schema map that only tools/list needs"
+
+    listing_facade = FB.facades_for(domain: domain, server_context: full_ctx).find { |f| f.tool_name == "widgets_tools" }
+    refute_nil listing_facade.meta["tool-input-schemas"],
+      "facades_for (tools/list) still carries the _meta schema map"
   end
 
   def test_facet_domain_rejects_unknown_schema_strategy
@@ -573,6 +590,38 @@ class FacadeTest < Minitest::Test
     McpAuthorization.config.categories { summary :widgets, "Widget tools." }
     with_summary = McpAuthorization::Cache.send(:compute_defs_digest)
     refute_equal faceted, with_summary, "editing a group summary must invalidate cached tools/list"
+  end
+
+  # Design doc §8: the cache must key a faceted domain on the caller's decision
+  # vector, learned by observing a cold compile of the facade path. If the
+  # Recorder didn't see the gates the facade path consults, two callers with
+  # different permissions would collide on one cache key — a silent RBAC leak
+  # in the listing (a viewer served the admin's facade set). Asserted, not
+  # assumed.
+  def test_facade_cold_compile_learns_vocabulary_so_permissions_key_differently
+    define_standard_tools
+    facet!
+
+    # Cold-compile the faceted domain under a Recorder so the cache learns
+    # which decisions the facade path (permitted? + per-tool schema compile)
+    # consults — exactly what McpController does on a cache miss.
+    cold_ctx = StubContext.new([:view_widgets, :manage_widgets, :billing, :admin])
+    effective, recorder = McpAuthorization::Cache.recording_context(cold_ctx)
+    FB.facades_for(domain: domain, server_context: effective)
+    McpAuthorization::Cache.learn!(domain: domain, recorder: recorder)
+
+    key_admin = McpAuthorization::Cache.tools_list_key(
+      domain: domain,
+      server_context: StubContext.new([:view_widgets, :manage_widgets, :billing, :admin]),
+    )
+    key_viewer = McpAuthorization::Cache.tools_list_key(
+      domain: domain,
+      server_context: StubContext.new([:view_widgets]), # no :manage_widgets, :billing, :admin
+    )
+
+    refute_nil key_admin, "vocabulary must be learned from the facade cold compile"
+    refute_equal key_admin, key_viewer,
+      "callers with different permissions must key differently — else a facade tools/list is shared across RBAC cohorts"
   end
 
   def test_facades_are_not_registered_as_tools
