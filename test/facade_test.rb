@@ -188,6 +188,14 @@ class FacadeTest < Minitest::Test
     end
   end
 
+  def test_facet_domain_rejects_unknown_group_by
+    # :category is the only supported grouping key; a typo must fail loudly
+    # rather than silently behaving as :category.
+    assert_raises(ArgumentError) do
+      McpAuthorization.config.facet_domain(domain, group_by: :tag)
+    end
+  end
+
   def test_facet_domain_rejects_invalid_facade_suffix
     assert_raises(ArgumentError) do
       McpAuthorization.config.facet_domain(domain, group_by: :category, facade_suffix: "bad suffix")
