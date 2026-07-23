@@ -45,13 +45,22 @@ module McpAuthorization
       # A single facade by its tool name (e.g. "orders_tools"), or nil when
       # the name matches no non-empty group for this caller. Used by
       # +tools/call+ routing so one call doesn't build every facade.
+      #
+      # Built with +for_dispatch: true+ — a +tools/call+ only needs the
+      # advertised name set to route through, never the +_meta+ per-tool
+      # schemas (those are a +tools/list+ concern). Skipping them avoids
+      # recompiling every tool's input schema in the group on each call,
+      # preserving the "compile only the invoked tool" cost that facades'
+      # large target domains most depend on.
       #: (domain: String, name: String, server_context: untyped) -> singleton(MCP::Tool)?
       def facade_for(domain:, name:, server_context:)
         config = McpAuthorization.config.facet_config(domain)
         return nil unless config
 
         group_tools(domain, server_context, config).each do |category, tools|
-          return build_facade(domain, category, tools, server_context, config) if facade_name(category, config) == name
+          if facade_name(category, config) == name
+            return build_facade(domain, category, tools, server_context, config, for_dispatch: true)
+          end
         end
         nil
       end
@@ -110,8 +119,12 @@ module McpAuthorization
       # Build the synthetic MCP::Tool subclass for one group, with this
       # caller's description, schema, and dispatch baked in — the same
       # materialization shape Tool.materialize_for uses for real tools.
-      #: (String, Symbol, Array[singleton(McpAuthorization::Tool)], untyped, Hash[Symbol, untyped]) -> singleton(MCP::Tool)
-      def build_facade(domain, category, tools, server_context, config)
+      #
+      # +for_dispatch:+ true skips the +_meta+ per-tool schema map, which only
+      # a +tools/list+ consumer reads — a +tools/call+ routes on the advertised
+      # name set alone. See +facade_for+.
+      #: (String, Symbol, Array[singleton(McpAuthorization::Tool)], untyped, Hash[Symbol, untyped], ?for_dispatch: bool) -> singleton(MCP::Tool)
+      def build_facade(domain, category, tools, server_context, config, for_dispatch: false)
         name = facade_name(category, config)
         desc = facade_description(category, tools, server_context)
         strategy = config[:schema_strategy]
@@ -124,8 +137,9 @@ module McpAuthorization
         # keywords, and `_meta` is never forwarded to the model as the tool's
         # input_schema. So the listing stays valid for strict Zod clients and
         # strict-mode LLM tool-calling while still carrying the schemas in-band
-        # for capable clients.
-        meta_payload = strategy == :vendor_extension ? { "tool-input-schemas" => child_schema_map(tools, server_context) } : nil
+        # for capable clients. Skipped on the dispatch path (nothing reads it
+        # there) so a facade call doesn't recompile every tool in the group.
+        meta_payload = !for_dispatch && strategy == :vendor_extension ? { "tool-input-schemas" => child_schema_map(tools, server_context) } : nil
 
         advertised = tools.map(&:tool_name).to_set
         builder = self
@@ -166,10 +180,10 @@ module McpAuthorization
         DESC
       end
 
-      # The facade inputSchema for the configured strategy. All three keep
+      # The facade inputSchema for the configured strategy. Both strategies keep
       # per-tool schemas out of the description and advertise only tools the
       # caller may invoke; they differ in where argument schemas live.
-      #: (Array[singleton(McpAuthorization::Tool)], untyped, Symbol) -> Hash[Symbol, untyped]
+      #
       # The facade inputSchema is always a flat object — a `tool_name` enum plus
       # a permissive `arguments` object, with NO top-level combinator. LLM tool
       # `input_schema` must have an object root: Anthropic and OpenAI reject
@@ -180,6 +194,7 @@ module McpAuthorization
       # on the facade's `_meta` (:vendor_extension, see build_facade) for a
       # client to expand, or are omitted entirely (:lazy) and enforced at
       # dispatch by the target tool's own filter_input.
+      #: (Array[singleton(McpAuthorization::Tool)], Symbol) -> Hash[Symbol, untyped]
       def facade_input_schema(tools, strategy)
         arguments_description =
           if strategy == :vendor_extension

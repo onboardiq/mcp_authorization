@@ -4,6 +4,18 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.1]
+
+Follow-ups from the 0.7.0 review (onboardiq/mcp_authorization#31).
+
+### Fixed
+- **A facade `tools/call` no longer recompiles every tool in the group.** `FacadeBuilder.facade_for` (the `tools/call` routing path) built the facade with the `:vendor_extension` `_meta` payload, which compiles the input schema of *every* tool in the group — but dispatch only needs the advertised name set, and nothing on the call path reads `_meta`. Over a 30-tool group that was ~30 extra per-tool compiles on every call, partially regressing the 0.6.0 "compile only the invoked tool" optimization on exactly the large domains facades target. `build_facade` now takes `for_dispatch:` (true from `facade_for`) and skips the `_meta` map; `tools/list` (`facades_for`) is unchanged and still carries it.
+- **`facet_domain(group_by:)` is now validated.** Any value but `:category` (the only supported grouping key) raises `ArgumentError`, consistent with `schema_strategy:`/`uncategorized:`. Previously a typo (`group_by: :tag`) was silently accepted and behaved as `:category`.
+- **Corrected a stale RBS annotation on `FacadeBuilder.facade_input_schema`** (declared 3 params for a 2-param method; the intervening prose comment also caused Sentinel to omit it from the generated sigs). Annotation fixed and moved adjacent to the def so it regenerates.
+
+### Added
+- **Cache-vocabulary test for the facade path** (design doc §8): asserts a cold compile of a faceted domain learns the consulted decisions, so two callers with different permission sets produce different `tools_list_key`s (guarding against a shared-listing RBAC leak).
+
 ## [0.7.0] - 2026-07-21
 
 Declarative tool grouping: a domain can present its tools as a small set of
