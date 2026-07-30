@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block title %}Page not found — {{ config.title }}{% endblock title %}
+
+{% block content %}
+<article class="prose">
+  <h1>Page not found</h1>
+  <p class="lede">That page moved or never existed.</p>
+  <p>
+    Try the <a href="{{ get_url(path='@/guide/_index.md') }}">guide</a> or the
+    <a href="{{ get_url(path='@/reference/_index.md') }}">reference</a>.
+  </p>
+</article>
+{% endblock content %}

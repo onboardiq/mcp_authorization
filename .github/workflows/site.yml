@@ -1,0 +1,110 @@
+name: Site
+
+# The site is collected from the repo's markdown at build time, so a docs edit
+# in README.md / COOKBOOK.md / CHANGELOG.md / docs/designs must republish it —
+# not just a change under site/.
+#
+# (Listed twice on purpose — GitHub Actions does not support YAML anchors.)
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "README.md"
+      - "COOKBOOK.md"
+      - "CHANGELOG.md"
+      - "docs/designs/**"
+      - ".github/workflows/site.yml"
+  pull_request:
+    paths:
+      - "site/**"
+      - "README.md"
+      - "COOKBOOK.md"
+      - "CHANGELOG.md"
+      - "docs/designs/**"
+      - ".github/workflows/site.yml"
+  # Lets you redeploy the current main without pushing a commit.
+  workflow_dispatch:
+
+# GITHUB_TOKEN needs pages:write to publish and id-token:write for the
+# deploy-pages OIDC exchange. contents:read is all the build needs.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two deploys at once; queue instead of cancelling, so a queued
+# deploy still lands.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  ZOLA_VERSION: "0.22.1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Install a pinned Zola from the official release tarball. Pinning keeps
+      # a Zola release from silently changing the rendered output.
+      - name: Install Zola ${{ env.ZOLA_VERSION }}
+        run: |
+          curl -fsSL -o zola.tar.gz \
+            "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          tar -xzf zola.tar.gz
+          sudo install -m 755 zola /usr/local/bin/zola
+          zola --version
+
+      # No actions/configure-pages step here on purpose, for two reasons:
+      #
+      # 1. Its base_url output would be wrong to emit. The Pages API reports
+      #    this site as http://fountain.engineering/mcp_authorization/ —
+      #    http, because https_enforced is false on a URL derived from the
+      #    org site's custom domain. Emitting http:// asset links onto a page
+      #    served over https gets them blocked as mixed content.
+      # 2. It errors until Pages is enabled, which blocked building and
+      #    link-checking on pull requests for a setting only deploy needs.
+      #
+      # site/config.toml declares the correct https base_url instead.
+
+      # Turns README.md / COOKBOOK.md / CHANGELOG.md / docs/designs into
+      # site/content/. Stdlib only — no bundle install needed.
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: false
+
+      - name: Collect docs
+        run: ruby site/collect.rb
+
+      # --drafts is off by default; --check-external-links is not, and would
+      # make the build depend on third-party uptime.
+      - name: Build
+        working-directory: site
+        run: zola build --minify
+
+      - name: Verify internal links
+        working-directory: site
+        run: zola check --skip-external-links
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/public
+
+  # PRs build and link-check but do not publish.
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

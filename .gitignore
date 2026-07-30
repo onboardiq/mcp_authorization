@@ -4,3 +4,11 @@ Gemfile.lock
 pkg/
 tmp/
 .DS_Store
+
+# Docs site (site/) generated artifacts. content/ is collected from the repo's
+# markdown by site/collect.rb; giallo-*.css is emitted by Zola from
+# [markdown.highlighting]; public/ is the build output.
+/site/content/
+/site/public/
+/site/static/giallo-*.css
+/site/static/processed_images/

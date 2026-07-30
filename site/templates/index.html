@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block content %}
+<article class="prose home">
+  {# No lede here: the collected README intro opens with the same sentence. #}
+  <div class="hero">
+    <h1>{{ config.title }}</h1>
+    <p class="hero-actions">
+      <a class="button" href="{{ get_url(path='@/guide/_index.md') }}">Read the cookbook</a>
+      <a class="button button-quiet" href="{{ get_url(path='@/reference/_index.md') }}">Reference</a>
+    </p>
+  </div>
+
+  {{ section.content | safe }}
+
+  {% for path in section.subsections %}
+    {% set sec = get_section(path=path) %}
+    <h2 id="{{ sec.title | slugify }}">{{ sec.title }}</h2>
+    {% if sec.description %}<p>{{ sec.description }}</p>{% endif %}
+    {% if sec.pages | length > 0 %}
+    <ul class="card-list">
+      {% for page in sec.pages %}
+      <li>
+        <a href="{{ page.permalink }}">{{ page.title }}</a>
+        {% if page.description %}<p>{{ page.description }}</p>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p><a href="{{ sec.permalink }}">Open {{ sec.title }}</a></p>
+    {% endif %}
+  {% endfor %}
+
+  <p class="provenance">
+    Every page on this site is collected from the markdown in the
+    <a href="{{ config.extra.repo_url }}">repository</a> by
+    <code>site/collect.rb</code> at build time. The repo docs are the source of truth.
+  </p>
+</article>
+{% endblock content %}
