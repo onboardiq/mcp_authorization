@@ -6,6 +6,10 @@ Add it to your Gemfile and your Rails app speaks [MCP](https://modelcontextproto
 
 > Looking for task-oriented "how do I X?" recipes rather than reference? See the **[Cookbook](COOKBOOK.md)**.
 
+<!-- site:skip -->
+> Prefer these docs as a browsable site, one section per page? **<https://onboardiq.github.io/mcp_authorization>** — built from these same files by [`site/collect.rb`](site/collect.rb).
+<!-- site:endskip -->
+
 ## Three layers of authorization
 
 The gem gives you three independent controls over what each user sees:
@@ -69,6 +73,18 @@ end
 | `shared_type_paths` | `["sig/shared"]` | Directories where shared `.rbs` type files live |
 | `context_builder` | *required* | `(request) -> context` |
 | `cli_context_builder` | `nil` | `(domain:, role:) -> context` for rake tasks |
+| `strict_schema` | `false` | Emit stricter compiled schemas |
+| `tools_list_cache` | `nil` | `:memory`, `:redis`, or any object responding to `get`/`set` — see [Caching `tools/list`](#caching-toolslist) |
+| `tools_list_cache_ttl` | `3600` | Per-entry TTL in seconds |
+| `tools_list_cache_redis` | `nil` | Explicit Redis client for the `:redis` store |
+| `tools_list_cache_redis_url` | `nil` | Explicit Redis URL; falls back to `ENV["REDIS_URL"]`, then `Redis.new` |
+
+Two configuration **methods** (not attributes) turn a domain into grouped facades — see [Tool grouping](#tool-grouping-facades):
+
+| Method | Purpose |
+|---|---|
+| `facet_domain :domain, group_by: :category, ...` | Present this domain as one facade tool per category. Optional `schema_strategy:`, `uncategorized:`, `facade_suffix:`. |
+| `categories { summary :key, "text" }` | Declare one summary line per group, used as each facade description's lead. |
 
 ## The contract
 
@@ -293,6 +309,7 @@ class MyTool < McpAuthorization::Tool
   gate :feature, :order_tracking  # any predicate: hidden unless server_context.feature?(:order_tracking)
   gate :tier, :enterprise         # multiple gates AND together
   tags "recruiting", "operations" # which domains this tool appears in
+  category :orders                # group this tool belongs to in a faceted domain
   read_only!                      # MCP annotation hints
   dynamic_contract MyService      # handler class
 end
@@ -304,6 +321,7 @@ end
 | `authorization :sym` | Tool-level RBAC visibility gate. Convenience alias for `gate :requires, :sym` — routes through the generic gate pipeline and falls back to `current_user.can?(:sym)` when the server context lacks a `requires?` method. Omit for public tools. |
 | `gate :predicate, :value` | Tool-level generic predicate gate. Calls `server_context.{predicate}?(value)`. Repeat for AND. Fail-open when the predicate method is missing (warning logged in dev). |
 | `tags "domain1", ...` | Domain(s) this tool appears under. Defaults to `["default"]`. |
+| `category :name` | Group this tool belongs to when its domain is faceted (see [Tool grouping](#tool-grouping-facades)). Ignored in flat domains. Optional `summary:` kwarg supplies the group summary for single-tool groups. |
 | `dynamic_contract HandlerClass` | Handler providing description, schemas, and execution |
 | `read_only!` | Annotation: tool only reads data |
 | `not_destructive!` | Annotation: tool does not destroy data |
@@ -315,6 +333,28 @@ end
 `authorization :perm` is just a convenience for `gate :requires, :perm` — internally there is one gate pipeline, not two. Multiple `gate` declarations AND together with `authorization`: the tool is shown only when every check passes. This makes tool-level gating symmetric with the field-level annotations (`@requires`, `@feature`, any custom predicate).
 
 Tools self-register when loaded. Put them anywhere under `tool_paths` (default: `app/mcp/`).
+
+### Introspecting a tool class
+
+Every declaration is readable back off the class, which is what the registry, the facade builder, and the cache digest use:
+
+| Reader | Returns |
+|---|---|
+| `_permission` | The symbol passed to `authorization` |
+| `_gates` | `[{ name:, value: }, ...]` for every declared gate |
+| `_tags` | Declared domains |
+| `_category` | Declared category symbol, or `nil` |
+| `_category_summary` | Summary passed to `category(summary:)`, or `nil` |
+| `_contract_handler` | The handler class |
+
+`ToolRegistry` is the entry point for turning those declarations into MCP tools:
+
+| Registry method | Purpose |
+|---|---|
+| `tool_classes_for(domain:, server_context:)` | Every permitted tool in a domain (the `tools/list` path) |
+| `tool_class_for(domain:, name:, server_context:)` | One named tool, or `nil` (the `tools/call` path) |
+| `facades_for(domain:, server_context:)` | Facades for a faceted domain |
+| `facade_for(domain:, name:, server_context:)` | One facade by name |
 
 ## Contract validation
 
@@ -384,6 +424,19 @@ McpAuthorization.configure do |config|
 end
 ```
 
+Grouping is opt-in and per-domain: a domain with no `facet_domain` behaves
+exactly as before, and `category` is inert there. `facet_domain` takes:
+
+| Option | Default | Description |
+|---|---|---|
+| `group_by:` | *required* | Grouping key. Only `:category` today; anything else raises `ArgumentError`. |
+| `schema_strategy:` | `:vendor_extension` | Where per-tool argument schemas go — `:vendor_extension` or `:lazy` (below). |
+| `uncategorized:` | `:fallback` | `:fallback` collects tools with no `category` into an `uncategorized` group; `:error` raises instead. |
+| `facade_suffix:` | `"tools"` | Token appended to a category to form the facade name (`orders_tools`). |
+
+For a group that holds a single tool, `category :orders, summary: "..."` saves a
+trip to the central registry. When both are declared, `config.categories` wins.
+
 `tools/list` for the domain then returns one facade per group the caller has
 at least one permitted tool in (`orders_tools`, `billing_tools`), each
 describing its tools with RBAC-filtered one-liners. Calling a facade names the
@@ -394,10 +447,40 @@ inner tool and its arguments:
   "arguments": { "tool_name": "update_order", "arguments": { "id": "o_1" } } }
 ```
 
-Dispatch resolves the real tool through its normal call path — authorization,
-gating, and schema filtering apply exactly as if the tool had been called
-directly, and JSON-string argument blobs are coerced against the *target*
-tool's schema.
+### Facade shape
+
+| Part | Value |
+|---|---|
+| Name | `"#{category}_#{facade_suffix}"` — default suffix `tools`, so `orders_tools` |
+| Description | Group summary, then one line per tool the caller may invoke: `- tool_name — first line of that tool's description for this caller` |
+| `inputSchema` | Flat object: `tool_name` (string enum of permitted tool names) + `arguments` (object). Both required. |
+| `_meta` | Under `:vendor_extension`, key `"tool-input-schemas"` — a map of tool name to that caller's compiled input schema |
+
+### Facade dispatch
+
+Dispatch resolves the real tool through its normal call path — there is no
+second code path, and therefore no second place for authorization to be wrong:
+
+1. **Advertised-set check.** `tool_name` must be in the set advertised to *this*
+   caller, else `ArgumentError` listing the valid names.
+2. **Re-resolution.** The tool is re-fetched via `ToolRegistry.tool_class_for`,
+   which re-runs `permitted?` — so a stale advertised set cached by a client
+   cannot get a caller into a tool they've lost access to. Failure raises
+   `NotAuthorizedError`.
+3. **Argument coercion.** MCP clients frequently serialize nested objects as JSON
+   strings, and the facade's generic `arguments: object` contract cannot know
+   which fields are structured. The `arguments` blob itself, and any top-level
+   value whose type in the *target's* compiled schema is `object` or `array`, are
+   JSON-parsed. Invalid JSON raises `ArgumentError` naming the field.
+4. **Delegation.** The target's materialized `call` runs, applying `filter_input`
+   and `filter_output` exactly as in a direct call.
+
+Direct tool names still resolve on `tools/call`, so a client that learned a
+real tool name before the domain was faceted keeps working.
+
+A `tools/call` build skips the `_meta` per-tool schema map (`for_dispatch: true`)
+— nothing on the call path reads it, and building it would recompile every tool
+in the group on every call.
 
 The facade `inputSchema` is always a flat object (a `tool_name` enum plus a
 permissive `arguments` object). It has to be: an LLM tool `input_schema` must
@@ -417,13 +500,31 @@ therefore only chooses where the per-tool schemas go:
 
 Uncategorized tools land in an `uncategorized` facade by default; pass
 `uncategorized: :error` to fail fast instead. Groups with zero permitted tools
-are hidden entirely, so a facade never advertises an empty `enum`.
+are hidden entirely, so a facade never advertises an empty `enum`. A facade
+name that collides with a real registered tool in the domain raises
+`FacadeBuilder::FacadeNameCollisionError` rather than shadowing that tool.
 
 Facade names are `#{category}_tools` by default. Override the suffix per domain
 with `facade_suffix:` — e.g. `config.facet_domain :admin, group_by: :category,
 facade_suffix: "hire"` exposes `orders_hire`, `billing_hire`. The suffix must be
 a lowercase identifier fragment (`[a-z0-9_]`) so the derived name stays a valid
-MCP tool name. See `docs/designs/tool-grouping-facades.md` for the full design.
+MCP tool name. See [the design doc](docs/designs/tool-grouping-facades.md) for
+the full rationale.
+
+Facet configuration participates in the [`tools/list` cache](#caching-toolslist)
+digest — each tool's `category`, every `facet_domain` setting, and every group
+summary — so toggling grouping or rewording a summary invalidates cached
+listings the same way a gate change does.
+
+### Facade errors
+
+| Error | Raised when |
+|---|---|
+| `FacadeBuilder::UncategorizedToolError` | A tool has no `category` in a domain faceted with `uncategorized: :error` |
+| `FacadeBuilder::FacadeNameCollisionError` | A derived facade name collides with a registered tool in the domain |
+| `ArgumentError` (config) | Invalid `group_by:`, `schema_strategy:`, `uncategorized:`, or `facade_suffix:` |
+| `ArgumentError` (dispatch) | `tool_name` not advertised, or a string argument that isn't valid JSON |
+| `NotAuthorizedError` | Re-resolution found the caller isn't permitted after all |
 
 ## RBS type syntax
 
@@ -457,6 +558,16 @@ The `@rbs type` comments compile to JSON Schema:
 # Type references (resolved from local types and imports)
 # @rbs type input = { id: String, status: status }
 ```
+
+Every handler must declare `@rbs type output`. It may be a single record, a reference, or a union:
+
+```ruby
+# @rbs type output = { id: String }        # inline record
+# @rbs type output = applicant             # reference
+# @rbs type output = success | error       # union
+```
+
+When a type appears more than once in a compiled schema, it is hoisted into `$defs` and referenced with `$ref` rather than inlined repeatedly. This is automatic — nothing to declare.
 
 ### Constraint and annotation tags
 
@@ -557,6 +668,17 @@ end
 
 The `@min` / `@max` tags are type-aware: on strings they emit `minLength`/`maxLength`, on numbers `minimum`/`maximum`, and on arrays `minItems`/`maxItems`.
 
+### Where tags may appear
+
+| Position | Effect |
+|---|---|
+| On a param in `#:` | Constrains or gates that input field |
+| On a field in an `@rbs type` record | Constrains or gates that output field |
+| On a member of an `@rbs type` union | Gates that whole output variant |
+| On an inline literal union member | Gates that individual member |
+
+A tag trailing a whole inline literal union applies to the **field**, not to the last member — the compiler distinguishes the two by whether any non-final member carries a tag.
+
 ### Multiline `#:` annotations
 
 The `#:` annotation above `def call` supports multiple lines. Each line starts with `#:`:
@@ -610,6 +732,70 @@ MCP clients can narrow on `success: const true` vs `success: const false` -- the
 ## Performance
 
 Source files are parsed once at boot and cached in memory. Only `@requires` filtering runs per request (hash lookups and `can?` calls). In development, caches are cleared automatically on file change via the Rails reloader.
+
+Per-request work is also scoped to what the incoming JSON-RPC method actually needs, since per-tool schema compilation is the dominant cost of an MCP request:
+
+| Method | Tools materialized |
+|---|---|
+| `tools/list` | Every permitted tool in the domain |
+| `tools/call` | Only the invoked tool |
+| `initialize`, `notifications/initialized`, `ping`, GET stream probe | None |
+| Unrecognized shape (e.g. a batch with no top-level `method`) | Full domain, so routing stays correct |
+
+In a 140-tool domain that took a `tools/call` from ~2.6s to under 100ms and `notifications/initialized` from ~2s to ~1ms, with no change to `tools/list` output. What remains is the listing itself — which is cacheable (below) and, for very large domains, [groupable](#tool-grouping-facades).
+
+## Caching `tools/list`
+
+`tools/list` must materialize a per-user schema for every tool in a domain. That cost can be cached. Default is no caching, so nothing changes unless you opt in:
+
+```ruby
+McpAuthorization.configure do |c|
+  c.tools_list_cache = :redis          # or :memory, or any object responding to get/set
+  c.tools_list_cache_ttl = 3600        # seconds (default)
+end
+```
+
+| Store | Behavior |
+|---|---|
+| `:memory` | Process-local, bounded LRU with per-entry TTL |
+| `:redis` | Shared across processes, JSON values, per-entry TTL |
+| custom object | Anything responding to `get`/`set` |
+| *(unset)* | `NullStore` — no caching |
+
+The Redis connection resolves from an explicit client (`tools_list_cache_redis`), then `tools_list_cache_redis_url`, then `ENV["REDIS_URL"]`, then a bare `Redis.new` — i.e. it defaults to the host's Rails redis config with no extra wiring. `redis` is an optional dependency, required lazily only when the Redis store is used.
+
+### The key is a decision vector, not an identity
+
+```
+H(domain + tool_defs_digest + vocab_fingerprint + decision_vector)
+```
+
+The **decision vector** is the result of every gating decision the domain's compilation consults — `@requires` / `@feature` / `@tier` / custom predicates, tool-level `gate` and `authorization`, and `current_user.can?` / `default_for`. It never includes user or account identity.
+
+Two contexts that answer all of those identically produce identical schemas by construction, so they share an entry. Flip one feature flag and the vector — and the key — change, so an admin in a flag-on account never receives a flag-off account's tools. The `tool_defs_digest` (each tool's gates plus handler source, plus facet configuration) changes on deploy, auto-invalidating stale entries; the TTL bounds out-of-band staleness, such as a permission changed directly in the database.
+
+### Two ways to supply the vector
+
+**Automatic.** On the first (cold) compile the gem wraps the context in a `Cache::Recorder`, learns the domain's predicate vocabulary, then replays that vocabulary against the live context on later requests.
+
+**Explicit.** If the server context responds to `mcp_cache_fingerprint`, its return value is used verbatim as the decision component and the recorder is skipped:
+
+```ruby
+class ServerContext
+  def mcp_cache_fingerprint
+    [current_user.role, account.enabled_features.sort, account.plan_tier]
+  end
+end
+```
+
+Explicit wins when present. Reach for it when gating depends on something the recorder cannot observe, or when you would rather own the invalidation contract than infer it.
+
+### Operational notes
+
+- **Cache outages fail open** — a `get`/`set` error is logged and behaves as a miss, never breaking `tools/list`.
+- **Only successful listings are cached.** Error and unexpected responses render but are not stored.
+- **A hit still rebuilds the envelope** — the cached `result` is re-wrapped with the live JSON-RPC id.
+- **Development reloads clear it** (the reloader calls `Cache.reset!`), so an edited annotation shows up immediately.
 
 ## Development
 

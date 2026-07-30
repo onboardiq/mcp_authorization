@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} — {{ config.title }}{% endblock title %}
+{% block description %}{{ page.description | default(value=config.description) }}{% endblock description %}
+
+{% block content %}
+<article class="prose">
+  <nav class="breadcrumb" aria-label="Breadcrumb">
+    {% set section = get_section(path=page.ancestors | last, metadata_only=true) %}
+    <a href="{{ section.permalink }}">{{ section.title }}</a>
+  </nav>
+
+  <h1>{{ page.title }}</h1>
+  {% if page.description %}<p class="lede">{{ page.description }}</p>{% endif %}
+
+  {% if page.toc | length > 1 %}
+  <details class="toc">
+    <summary>On this page</summary>
+    <ul>
+      {% for h in page.toc %}
+      <li><a href="{{ h.permalink | safe }}">{{ h.title }}</a></li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+
+  {{ page.content | safe }}
+
+  {% if page.extra.source %}
+  <p class="provenance">
+    Collected from <a href="{{ page.extra.source_url }}"><code>{{ page.extra.source }}</code></a>
+    in the repository. Edit it there, not here.
+  </p>
+  {% endif %}
+
+  <nav class="pager">
+    {% if page.lower %}
+    <a class="pager-prev" href="{{ page.lower.permalink }}">
+      <span>Previous</span>{{ page.lower.title }}
+    </a>
+    {% endif %}
+    {% if page.higher %}
+    <a class="pager-next" href="{{ page.higher.permalink }}">
+      <span>Next</span>{{ page.higher.title }}
+    </a>
+    {% endif %}
+  </nav>
+</article>
+{% endblock content %}

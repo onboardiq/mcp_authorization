@@ -24,10 +24,15 @@ The mental model, in one line: **your RBS type annotations are the authorization
 - [14. See exactly what a role sees (debugging)](#14-see-exactly-what-a-role-sees-debugging)
 - [15. Mark a tool read-only / destructive (annotation hints)](#15-mark-a-tool-read-only--destructive-annotation-hints)
 
+**Scaling a large tool surface**
+
+- [16. Group a large domain into facades](#16-group-a-large-domain-into-facades)
+- [17. Cache the tools/list response](#17-cache-the-toolslist-response)
+
 **Talking to the outside world**
 
-- [16. Query a database from a tool](#16-query-a-database-from-a-tool)
-- [17. Talk to a TCP socket from a tool](#17-talk-to-a-tcp-socket-from-a-tool)
+- [18. Query a database from a tool](#18-query-a-database-from-a-tool)
+- [19. Talk to a TCP socket from a tool](#19-talk-to-a-tcp-socket-from-a-tool)
 
 ---
 
@@ -473,6 +478,19 @@ bundle exec rake "mcp:inspect[operator,manager]"
 
 **Result.** `mcp:tools` prints each visible tool with its input field names and output variant shapes — so you can diff operator vs manager at a glance and confirm the gate works. This is the fastest feedback loop while authoring schemas.
 
+**Always check the negative case too.** A gate that hides a field from *everyone* looks identical to a working gate in a single-role run. A misspelled predicate (`@requires(:backward_routeing)`) reads as "the gate works" until someone who should see the field reports that they can't. Run both roles, every time.
+
+When something looks wrong, in rough order of likelihood:
+
+| Symptom | First thing to check |
+|---|---|
+| Tool missing for everyone | Domain tag — does `tags` match the URL segment? |
+| Field missing for everyone | Predicate spelling; a context method that returns `false` unconditionally |
+| Field visible to everyone | Predicate method missing on the context (field tags are permissive) |
+| Tool visible despite a gate | Same — tool gates *fail open* when the predicate method is absent |
+| `ArgumentError` on first request | Handler contract — the message lists exactly what's missing |
+| Schema stale after an edit | Not development mode, or a `tools_list_cache` with a long TTL |
+
 ---
 
 ## 15. Mark a tool read-only / destructive (annotation hints)
@@ -500,6 +518,80 @@ end
 
 ---
 
+## Scaling a large tool surface
+
+The two recipes below are about *cost*, not authorization: what happens when one domain grows past what a model can choose from well, and past what you want to recompile on every listing.
+
+---
+
+## 16. Group a large domain into facades
+
+**Problem.** A domain has grown to a hundred-plus tools. `tools/list` is dominated by call-time argument schemas for tools the model will never pick, and choosing from a flat list that long is genuinely hard.
+
+**Solution.** Give each tool a `category`, then opt the domain into grouping. One facade per group replaces the flat list. Opt-in per domain — a domain with no `facet_domain` is untouched, and `category` is inert there.
+
+```ruby
+class ListOrdersTool < McpAuthorization::Tool
+  tags "admin"
+  category :orders                    # the group this tool belongs to
+  dynamic_contract OrderHandlers::List
+end
+```
+
+```ruby
+# config/initializers/mcp_authorization.rb
+config.facet_domain :admin, group_by: :category
+
+config.categories do
+  summary :orders,  "Create, inspect, and update orders and their line items."
+  summary :billing, "Invoices, payments, refunds, and billing profiles."
+end
+```
+
+Calling a facade names the inner tool and its arguments:
+
+```json
+{ "name": "orders_tools",
+  "arguments": { "tool_name": "update_order", "arguments": { "id": "o_1" } } }
+```
+
+**Result.** `tools/list` returns `orders_tools` and `billing_tools` instead of a hundred entries. Each facade's description is routing signal only: the group summary, then one line per tool *this* caller may invoke — so a description that varies by role varies here too. Per-tool argument schemas ride on the facade's `_meta` (default `:vendor_extension`) or are omitted entirely (`:lazy`).
+
+Dispatch goes through the real call path: the name must be one advertised to this caller, the tool is re-resolved through `permitted?`, and the target's own `filter_input`/`filter_output` run — so grouping changes the *shape of the listing*, never the authorization. Groups where the caller may invoke nothing are hidden entirely, so a facade never advertises an empty `enum`.
+
+> Tools with no `category` land in an `uncategorized` group. Pass `uncategorized: :error` when you'd rather CI catch the omission. Full option table and error list in the [README](README.md#tool-grouping-facades).
+
+---
+
+## 17. Cache the tools/list response
+
+**Problem.** `tools/list` compiles a schema for every visible tool, per caller. `tools/call` already compiles only the tool it invokes, and lifecycle methods compile nothing — the listing is the cost that's left.
+
+**Solution.** Turn on the cache. It's off by default, so nothing changes until you ask.
+
+```ruby
+McpAuthorization.configure do |c|
+  c.tools_list_cache = :redis          # or :memory, or any object responding to get/set
+  c.tools_list_cache_ttl = 3600        # seconds (default)
+end
+```
+
+If your gating depends on something the gem can't observe by watching predicate calls, say so explicitly and skip the inference:
+
+```ruby
+class ServerContext
+  def mcp_cache_fingerprint
+    [current_user.role, account.enabled_features.sort, account.plan_tier]
+  end
+end
+```
+
+**Result.** Entries are keyed on the *decisions* a compilation consulted — every predicate, gate, `can?`, and `default_for` — never on user or account identity. Two callers who answer all of them identically share an entry, because they'd compile byte-identical schemas anyway; flip one feature flag and the key changes. Deploys invalidate via a digest of tool gates plus handler source (facet configuration included), and the TTL bounds staleness from permission changes made with no deploy.
+
+Cache errors fail open — a Redis blip logs and behaves as a miss. Development reloads clear the cache, so an edited annotation is never masked by a stale entry.
+
+---
+
 ## Talking to the outside world
 
 Every recipe so far returned a canned hash. Real handlers do I/O — they query databases and open sockets. The gem doesn't get in the way: a handler is a plain Ruby object running inside your Rails process, so you have ActiveRecord, connection pools, and the standard library. Two things stay your job, and the next two recipes are mostly about them:
@@ -510,7 +602,7 @@ Every recipe so far returned a canned hash. Real handlers do I/O — they query 
 
 ---
 
-## 16. Query a database from a tool
+## 18. Query a database from a tool
 
 **Problem.** `search_applicants` should hit the real database, filter by what the LLM asked for, and return only the columns this user is allowed to see.
 
@@ -607,7 +699,7 @@ The connection comes from ActiveRecord's pool and is returned automatically at t
 
 ---
 
-## 17. Talk to a TCP socket from a tool
+## 19. Talk to a TCP socket from a tool
 
 **Problem.** A tool should open a raw TCP connection to a service, send a probe, read the reply, and report latency — without hanging the request thread or becoming an SSRF hole.
 

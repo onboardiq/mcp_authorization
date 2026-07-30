@@ -1,0 +1,37 @@
+# Zola configuration for the mcp_authorization documentation site.
+#
+# Local:  cd site && zola serve
+# Build:  cd site && zola build          # -> site/public
+# CI:     .github/workflows/site.yml builds this and deploys to GitHub Pages.
+#
+# base_url must carry the /mcp_authorization sub-path: this is a *project*
+# Pages site (onboardiq.github.io/mcp_authorization), not a user/org site at
+# the domain root. Templates link exclusively through `get_url` / `@/…` so
+# every URL picks the sub-path up automatically.
+base_url = "https://onboardiq.github.io/mcp_authorization"
+
+title = "mcp_authorization"
+description = "Rails engine for serving MCP tools with per-request schema discrimination compiled from RBS type annotations."
+
+compile_sass = false
+build_search_index = false
+generate_feeds = false
+
+[markdown]
+smart_punctuation = false
+# Clickable ¶-style links on h2/h3 so a section can be linked directly.
+insert_anchor_links = "right"
+
+# style = "class" emits CSS classes instead of inline colors, which is what
+# lets one build serve both a light and a dark syntax theme: Zola writes
+# giallo-light.css and giallo-dark.css, and base.html links each behind a
+# prefers-color-scheme media query.
+[markdown.highlighting]
+style = "class"
+light_theme = "github-light"
+dark_theme = "github-dark"
+
+[extra]
+gem_version = "0.7.1"
+repo_url = "https://github.com/onboardiq/mcp_authorization"
+rubygems_url = "https://rubygems.org/gems/mcp_authorization"
