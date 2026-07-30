@@ -58,11 +58,12 @@ jobs:
           sudo install -m 755 zola /usr/local/bin/zola
           zola --version
 
-      # Emits _site_root/base_url so the built URLs carry the right host and
-      # sub-path. For a project Pages site that is /<repo>/.
-      - name: Configure Pages
-        id: pages
-        uses: actions/configure-pages@v5
+      # No actions/configure-pages step here on purpose. It only exists to
+      # discover base_url, which site/config.toml already declares
+      # (https://onboardiq.github.io/mcp_authorization — a project Pages site
+      # always serves under /<repo>/). It also *fails* until Pages is enabled,
+      # which would block building and link-checking on pull requests for a
+      # setting only the deploy job actually needs.
 
       # Turns README.md / COOKBOOK.md / CHANGELOG.md / docs/designs into
       # site/content/. Stdlib only — no bundle install needed.
@@ -79,7 +80,7 @@ jobs:
       # make the build depend on third-party uptime.
       - name: Build
         working-directory: site
-        run: zola build --base-url "${{ steps.pages.outputs.base_url }}" --minify
+        run: zola build --minify
 
       - name: Verify internal links
         working-directory: site
