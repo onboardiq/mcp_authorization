@@ -1,7 +1,12 @@
 # Documentation site
 
 The [Zola](https://www.getzola.org) source for
-<https://onboardiq.github.io/mcp_authorization>.
+<https://fountain.engineering/mcp_authorization>.
+
+> The org's user site (`onboardiq.github.io`) carries the custom domain
+> `fountain.engineering`, so this project site serves from that domain under the
+> `/mcp_authorization` path. That host lives in `config.toml` as `base_url` — see the comment
+> there for why it is hardcoded rather than read from `actions/configure-pages`.
 
 **The site has no content of its own.** Every page is collected from the markdown in the repository
 root by `collect.rb` at build time. Those files are the source of truth — they are what people read

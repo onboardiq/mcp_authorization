@@ -7,7 +7,7 @@ Add it to your Gemfile and your Rails app speaks [MCP](https://modelcontextproto
 > Looking for task-oriented "how do I X?" recipes rather than reference? See the **[Cookbook](COOKBOOK.md)**.
 
 <!-- site:skip -->
-> Prefer these docs as a browsable site, one section per page? **<https://onboardiq.github.io/mcp_authorization>** — built from these same files by [`site/collect.rb`](site/collect.rb).
+> Prefer these docs as a browsable site, one section per page? **<https://fountain.engineering/mcp_authorization>** — built from these same files by [`site/collect.rb`](site/collect.rb).
 <!-- site:endskip -->
 
 ## Three layers of authorization

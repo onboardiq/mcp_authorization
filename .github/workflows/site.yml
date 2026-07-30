@@ -58,12 +58,17 @@ jobs:
           sudo install -m 755 zola /usr/local/bin/zola
           zola --version
 
-      # No actions/configure-pages step here on purpose. It only exists to
-      # discover base_url, which site/config.toml already declares
-      # (https://onboardiq.github.io/mcp_authorization — a project Pages site
-      # always serves under /<repo>/). It also *fails* until Pages is enabled,
-      # which would block building and link-checking on pull requests for a
-      # setting only the deploy job actually needs.
+      # No actions/configure-pages step here on purpose, for two reasons:
+      #
+      # 1. Its base_url output would be wrong to emit. The Pages API reports
+      #    this site as http://fountain.engineering/mcp_authorization/ —
+      #    http, because https_enforced is false on a URL derived from the
+      #    org site's custom domain. Emitting http:// asset links onto a page
+      #    served over https gets them blocked as mixed content.
+      # 2. It errors until Pages is enabled, which blocked building and
+      #    link-checking on pull requests for a setting only deploy needs.
+      #
+      # site/config.toml declares the correct https base_url instead.
 
       # Turns README.md / COOKBOOK.md / CHANGELOG.md / docs/designs into
       # site/content/. Stdlib only — no bundle install needed.
