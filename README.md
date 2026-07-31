@@ -1,4 +1,5 @@
 # mcp_authorization
+[read it](https://fountain.engineering/mcp_authorization/)
 
 Rails engine for serving MCP tools with per-request schema discrimination compiled from RBS type annotations.
 
