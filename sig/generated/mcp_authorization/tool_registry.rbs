@@ -13,5 +13,6 @@ module McpAuthorization
     def self.facade_for: (domain: String, name: String, server_context: untyped) -> singleton(MCP::Tool)?
     def self.find_tool: (String) -> singleton(McpAuthorization::Tool)?
     def self.reset!: () -> void
+    def self.eager_load_tool_paths!: () -> void
   end
 end

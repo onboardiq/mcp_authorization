@@ -28,11 +28,12 @@ The mental model, in one line: **your RBS type annotations are the authorization
 
 - [16. Group a large domain into facades](#16-group-a-large-domain-into-facades)
 - [17. Cache the tools/list response](#17-cache-the-toolslist-response)
+- [18. Generate tools instead of writing them](#18-generate-tools-instead-of-writing-them)
 
 **Talking to the outside world**
 
-- [18. Query a database from a tool](#18-query-a-database-from-a-tool)
-- [19. Talk to a TCP socket from a tool](#19-talk-to-a-tcp-socket-from-a-tool)
+- [19. Query a database from a tool](#19-query-a-database-from-a-tool)
+- [20. Talk to a TCP socket from a tool](#20-talk-to-a-tcp-socket-from-a-tool)
 
 ---
 
@@ -592,6 +593,57 @@ Cache errors fail open — a Redis blip logs and behaves as a miss. Development 
 
 ---
 
+## 18. Generate tools instead of writing them
+
+**Problem.** One tool per controller action, or per row in a config table, or per endpoint in a family you already ship. Hand-writing a file each is copying a declaration, not expressing anything.
+
+**Solution.** Register a **producer** — a callable that mints the classes and registers them. The gem calls it when it loads the rest of the surface.
+
+```ruby
+# config/initializers/mcp_authorization.rb
+McpAuthorization.configure do |config|
+  config.tool_producers << -> { GeneratedTools.register_all! }
+end
+```
+
+```ruby
+# app/service/generated_tools.rb
+module GeneratedTools
+  # Container for the generated classes. Deliberately outside every autoload
+  # path: Zeitwerk unloads what it defined, and a generated class parked in a
+  # managed namespace would survive an unload it should not survive.
+  module Registry; end
+
+  def self.register_all!
+    EXPOSED_ACTIONS.map do |spec|
+      const = :"#{spec.name.camelize}Tool"
+      next Registry.const_get(const, false) if Registry.const_defined?(const, false)
+
+      tool = Class.new(McpAuthorization::Tool)   # self-registers via inherited
+      tool.tool_name(spec.name)
+      tool.tags(*spec.domains)
+      tool.authorization(spec.permission)
+      tool.read_only! if spec.read_only
+      tool.dynamic_contract(spec.handler)
+      Registry.const_set(const, tool)            # names it, for backtraces
+    end
+  end
+end
+```
+
+**Result.** Generated tools appear in `tools/list` beside the file-defined ones, with the same gating, schema compilation, and facade grouping. Nothing else in your config changes.
+
+**Why a producer rather than a Rails callback.** Both obvious callbacks are traps, and the gem exists to take them off your plate:
+
+- `config.to_prepare` runs during `:run_prepare_callbacks`, *before* `:eager_load!` and before railties copy `config.i18n` onto `I18n`. Generating tools means loading the code they derive from, so from there you load application classes against an empty `I18n.load_path` — and anything resolving a translation in its class body (a validation message, an `inclusion:` list) freezes `"Translation missing: …"` in permanently. The failures land in models and validations, nowhere near MCP.
+- Registering *before* the gem's own load makes the registry non-empty, and `ensure_tools_loaded!` skips the `tool_paths` pass on a non-empty registry — so every file-defined tool silently disappears from `tools/list` in any environment that doesn't eager-load.
+
+A producer runs from a registry read, after the `tool_paths` pass and after each reload, so neither is reachable.
+
+**Two rules.** Make the producer **idempotent** — `register` dedupes by object identity, not by `tool_name`, so minting a fresh class per call registers a duplicate name and leaves `find_tool` picking arbitrarily (the `const_defined?` reuse above is the pattern). And expect exceptions to **propagate**: a malformed generated tool fails the read. In production, where the host eager-loads, that surfaces at boot rather than on the first `tools/list`.
+
+---
+
 ## Talking to the outside world
 
 Every recipe so far returned a canned hash. Real handlers do I/O — they query databases and open sockets. The gem doesn't get in the way: a handler is a plain Ruby object running inside your Rails process, so you have ActiveRecord, connection pools, and the standard library. Two things stay your job, and the next two recipes are mostly about them:
@@ -602,7 +654,7 @@ Every recipe so far returned a canned hash. Real handlers do I/O — they query 
 
 ---
 
-## 18. Query a database from a tool
+## 19. Query a database from a tool
 
 **Problem.** `search_applicants` should hit the real database, filter by what the LLM asked for, and return only the columns this user is allowed to see.
 
@@ -699,7 +751,7 @@ The connection comes from ActiveRecord's pool and is returned automatically at t
 
 ---
 
-## 19. Talk to a TCP socket from a tool
+## 20. Talk to a TCP socket from a tool
 
 **Problem.** A tool should open a raw TCP connection to a service, send a probe, read the reply, and report latency — without hanging the request thread or becoming an SSRF hole.
 

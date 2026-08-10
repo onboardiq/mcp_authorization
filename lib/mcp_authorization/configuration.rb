@@ -50,6 +50,27 @@ module McpAuthorization
     #: Array[String]
     attr_accessor :tool_paths
 
+    # Callables that register tool classes the host generates at runtime,
+    # rather than defining in a file under +tool_paths+.
+    #
+    #   config.tool_producers << -> { MyApp::GeneratedTools.register_all! }
+    #
+    # Invoked by +ToolRegistry.ensure_tools_loaded!+ after the +tool_paths+
+    # eager-load, on the first read of an empty registry. Because a producer
+    # runs from a registry read rather than a Rails boot callback, it cannot
+    # execute before the framework is fully configured — see
+    # +ToolRegistry.ensure_tools_loaded!+ for why that matters.
+    #
+    # A producer must be idempotent: +register+ dedupes by object identity,
+    # not by +tool_name+, so minting a fresh class on every call registers a
+    # second tool under the same name and leaves +find_tool+ resolving an
+    # arbitrary one. Reuse the class while its inputs are unchanged.
+    #
+    # Exceptions propagate — a malformed generated tool fails the read rather
+    # than silently vanishing from the surface.
+    #: Array[^() -> void]
+    attr_accessor :tool_producers
+
     # Directories (relative to +Rails.root+) where shared +.rbs+ type
     # files live. Used by RbsSchemaCompiler to resolve +# @rbs import+.
     #: Array[String]
@@ -151,6 +172,7 @@ module McpAuthorization
       @server_name = "mcp-authorization"
       @server_version = "1.0.0"
       @tool_paths = %w[app/mcp]
+      @tool_producers = []
       @shared_type_paths = %w[sig/shared]
       @default_domain = "default"
       @mount_path = "/mcp"

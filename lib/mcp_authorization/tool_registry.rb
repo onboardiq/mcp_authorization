@@ -31,15 +31,47 @@ module McpAuthorization
         tools
       end
 
-      # Force-loads tool directories so tool classes self-register.
+      # Force-loads tool directories so tool classes self-register, then runs
+      # +config.tool_producers+ for tools the host generates at runtime.
+      #
+      # Deliberately lazy, and the ordering here is the contract:
+      #
+      # * *Producers run last.* The +tool_paths+ eager-load is skipped entirely
+      #   once the registry is non-empty (the guard below), so a host that
+      #   registered a generated tool first would suppress the load of every
+      #   file-defined tool — silently, leaving a near-empty +tools/list+ in any
+      #   environment that doesn't eager-load. Running producers from inside
+      #   this method makes that unreachable.
+      #
+      # * *Producers run on a registry read, never from a boot callback.*
+      #   Generating tool classes means loading the code they derive from,
+      #   which in a Rails app pulls in a large share of the application. Doing
+      #   that from +config.to_prepare+ runs it during +:run_prepare_callbacks+,
+      #   which precedes +:eager_load!+ and +:finisher_hook+ — and +config.i18n+
+      #   is only copied onto +I18n+ from a railtie-level +after_initialize+.
+      #   Application code loaded that early sees an empty +I18n.load_path+, so
+      #   any class resolving a translation in its class body freezes
+      #   "Translation missing: ..." into validators and option lists
+      #   permanently. Deferring to first read sidesteps the whole ordering
+      #   question rather than asking each host to solve it.
+      #
+      # * *Producers re-run after +reset!+.* The Engine resets the registry on
+      #   every code reload; the next read repopulates it, producers included.
+      #
+      # The reentrancy guard lets a producer call back into the registry (to
+      # inspect what is already registered, say) without recursing forever on a
+      # registry that is still empty.
       #: () -> void
       def ensure_tools_loaded!
         return if @registered_tools&.any?
-        return unless defined?(Rails)
+        return if @loading_tools
 
-        McpAuthorization.config.tool_paths.each do |path|
-          full_path = Rails.root.join(path)
-          Rails.autoloaders.main.eager_load_dir(full_path) if File.directory?(full_path)
+        @loading_tools = true
+        begin
+          eager_load_tool_paths!
+          McpAuthorization.config.tool_producers.each(&:call)
+        ensure
+          @loading_tools = false
         end
       end
 
@@ -115,9 +147,29 @@ module McpAuthorization
       end
 
       # Clear the registry. Called by the Engine's reloader on code change.
+      # The next read reloads +tool_paths+ and re-runs +tool_producers+.
       #: () -> void
       def reset!
         @registered_tools = []
+        @loading_tools = false
+      end
+
+      private
+
+      # Probes for the methods actually called rather than the bare constant,
+      # matching Diagnostics' `defined?(Rails) && Rails.respond_to?(:env)`.
+      # A partially-loaded Rails (or an unrelated `Rails` module in a non-Rails
+      # process) satisfies `defined?` and then raises NoMethodError on `.root`,
+      # which would take `registered_tools` down with it — including for a host
+      # whose tools all come from `tool_producers` and need no autoloader.
+      #: () -> void
+      def eager_load_tool_paths!
+        return unless defined?(Rails) && Rails.respond_to?(:root) && Rails.respond_to?(:autoloaders)
+
+        McpAuthorization.config.tool_paths.each do |path|
+          full_path = Rails.root.join(path)
+          Rails.autoloaders.main.eager_load_dir(full_path) if File.directory?(full_path)
+        end
       end
     end
   end

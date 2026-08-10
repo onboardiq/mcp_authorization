@@ -50,6 +50,23 @@ module McpAuthorization
       end
     end
 
+    # Populate the registry at boot when the host eager-loads (production), so
+    # a malformed tool — or a +tool_producers+ callable that raises — fails the
+    # deploy instead of the first +tools/list+.
+    #
+    # +after_initialize+ specifically: this read may load a large part of the
+    # host application, and it is the earliest phase where the framework is
+    # guaranteed to be fully configured — notably +I18n+, which railties only
+    # wire up in this same phase. Rails cannot have loaded this Engine before
+    # its own railties, so this block is always registered after theirs, and
+    # load hooks run in registration order.
+    #
+    # Development and test stay lazy: nothing loads until something reads the
+    # registry.
+    config.after_initialize do |app|
+      McpAuthorization::ToolRegistry.registered_tools if app.config.eager_load
+    end
+
     # Prepend MCP routes into the host app's router. Uses +prepend+ so the
     # MCP endpoint is available before any catch-all routes the host may
     # define. Supports both domain-scoped and bare paths.
