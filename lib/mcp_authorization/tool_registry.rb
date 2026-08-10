@@ -24,10 +24,13 @@ module McpAuthorization
       end
 
       # All registered tool classes. Triggers eager loading on first access.
+      #
+      # Gated on "loading finished", not on "the array has entries" — see
+      # +ensure_tools_loaded!+ for why those must not be conflated.
       #: () -> Array[singleton(McpAuthorization::Tool)]
       def registered_tools
         tools = (@registered_tools ||= [])
-        ensure_tools_loaded! if tools.empty?
+        ensure_tools_loaded! unless @tools_loaded
         tools
       end
 
@@ -36,12 +39,8 @@ module McpAuthorization
       #
       # Deliberately lazy, and the ordering here is the contract:
       #
-      # * *Producers run last.* The +tool_paths+ eager-load is skipped entirely
-      #   once the registry is non-empty (the guard below), so a host that
-      #   registered a generated tool first would suppress the load of every
-      #   file-defined tool — silently, leaving a near-empty +tools/list+ in any
-      #   environment that doesn't eager-load. Running producers from inside
-      #   this method makes that unreachable.
+      # * *Producers run last*, inside this method, so a host cannot register a
+      #   generated tool ahead of the +tool_paths+ eager-load and suppress it.
       #
       # * *Producers run on a registry read, never from a boot callback.*
       #   Generating tool classes means loading the code they derive from,
@@ -58,18 +57,30 @@ module McpAuthorization
       # * *Producers re-run after +reset!+.* The Engine resets the registry on
       #   every code reload; the next read repopulates it, producers included.
       #
+      # +@tools_loaded+ tracks completion, and is set only after every producer
+      # has returned. It deliberately does NOT reuse "is +@registered_tools+
+      # non-empty?" as the signal, because a non-empty registry does not mean
+      # loading succeeded: +eager_load_tool_paths!+ registers the file-defined
+      # tools first, so by the time a producer raises the array is already
+      # populated — as it also is when a producer registers 40 tools and raises
+      # on the 41st. Guarding on that would make the failure loud exactly once
+      # and silent forever after, leaving a permanently incomplete surface. The
+      # contract is the opposite: a producer that raises fails *every* read until
+      # it is fixed. Re-running is safe — +register+ dedupes by identity and
+      # +eager_load_dir+ is a no-op on an already-loaded directory.
+      #
       # The reentrancy guard lets a producer call back into the registry (to
-      # inspect what is already registered, say) without recursing forever on a
-      # registry that is still empty.
+      # inspect what is already registered, say) without recursing forever.
       #: () -> void
       def ensure_tools_loaded!
-        return if @registered_tools&.any?
+        return if @tools_loaded
         return if @loading_tools
 
         @loading_tools = true
         begin
           eager_load_tool_paths!
           McpAuthorization.config.tool_producers.each(&:call)
+          @tools_loaded = true
         ensure
           @loading_tools = false
         end
@@ -152,6 +163,7 @@ module McpAuthorization
       def reset!
         @registered_tools = []
         @loading_tools = false
+        @tools_loaded = false
       end
 
       private

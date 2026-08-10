@@ -636,7 +636,7 @@ end
 **Why a producer rather than a Rails callback.** Both obvious callbacks are traps, and the gem exists to take them off your plate:
 
 - `config.to_prepare` runs during `:run_prepare_callbacks`, *before* `:eager_load!` and before railties copy `config.i18n` onto `I18n`. Generating tools means loading the code they derive from, so from there you load application classes against an empty `I18n.load_path` — and anything resolving a translation in its class body (a validation message, an `inclusion:` list) freezes `"Translation missing: …"` in permanently. The failures land in models and validations, nowhere near MCP.
-- Registering *before* the gem's own load makes the registry non-empty, and `ensure_tools_loaded!` skips the `tool_paths` pass on a non-empty registry — so every file-defined tool silently disappears from `tools/list` in any environment that doesn't eager-load.
+- Registering *before* the gem's own load used to make the registry non-empty and skip the `tool_paths` pass entirely — every file-defined tool silently disappearing from `tools/list` in any environment that doesn't eager-load. Producers run after that pass, so the hazard is gone.
 
 A producer runs from a registry read, after the `tool_paths` pass and after each reload, so neither is reachable.
 

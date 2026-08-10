@@ -17,15 +17,18 @@ class ToolProducersTest < Minitest::Test
 
   def setup
     @saved_tools = R.instance_variable_get(:@registered_tools)&.dup
+    @saved_loaded = R.instance_variable_get(:@tools_loaded)
     @saved_producers = McpAuthorization.config.tool_producers
     R.instance_variable_set(:@registered_tools, [])
     R.instance_variable_set(:@loading_tools, false)
+    R.instance_variable_set(:@tools_loaded, false)
   end
 
   def teardown
     McpAuthorization.config.tool_producers = @saved_producers
     R.instance_variable_set(:@registered_tools, @saved_tools)
     R.instance_variable_set(:@loading_tools, false)
+    R.instance_variable_set(:@tools_loaded, @saved_loaded)
   end
 
   def generated_tool(name)
@@ -47,10 +50,9 @@ class ToolProducersTest < Minitest::Test
     assert_equal tool, R.find_tool("generated_widget")
   end
 
-  # The ordering that makes the seam safe: tool_paths is eager-loaded before a
-  # producer can make the registry non-empty. A host registering first would
-  # trip ensure_tools_loaded!'s `return if @registered_tools&.any?` guard and
-  # silently suppress the load of every file-defined tool.
+  # The ordering that makes the seam safe: tool_paths is eager-loaded before any
+  # producer runs, so a host cannot register a generated tool ahead of the
+  # file-defined ones.
   def test_eager_loads_tool_paths_before_running_producers
     order = []
     McpAuthorization.config.tool_producers = [-> { order << :producer }]
@@ -90,17 +92,68 @@ class ToolProducersTest < Minitest::Test
     assert ran
   end
 
-  # Same contract the tool_paths load has always had: a non-empty registry
-  # means loading already happened.
-  def test_producers_do_not_run_when_the_registry_is_already_populated
+  # Loading is not repeated once it has completed.
+  def test_a_completed_load_is_not_repeated
     calls = 0
     McpAuthorization.config.tool_producers = [-> { calls += 1 }]
-    R.register(generated_tool("pre_existing"))
 
+    R.ensure_tools_loaded!
     R.ensure_tools_loaded!
     R.registered_tools
 
-    assert_equal 0, calls
+    assert_equal 1, calls
+  end
+
+  # "The array has entries" is NOT "loading finished". Guarding on the former
+  # would let a host that registers a tool before the first read suppress the
+  # tool_paths load entirely — the silent-erasure hazard producers exist to
+  # remove. A pre-populated registry must not short-circuit the load.
+  def test_a_pre_populated_registry_does_not_suppress_loading
+    calls = 0
+    McpAuthorization.config.tool_producers = [-> { calls += 1 }]
+    R.register(generated_tool("registered_by_hand"))
+
+    R.registered_tools
+
+    assert_equal 1, calls
+  end
+
+  # The contract is that a bad producer fails EVERY read until it is fixed.
+  # Guarding on a non-empty registry would break this: by the time a producer
+  # raises, the file-defined tools are already registered (here, the hand-written
+  # stand-in), so the next read would silently no-op and the surface would stay
+  # permanently incomplete.
+  def test_a_raising_producer_is_retried_on_every_read
+    hand_written = generated_tool("hand_written")
+    calls = 0
+    McpAuthorization.config.tool_producers = [lambda {
+      calls += 1
+      raise ArgumentError, "bad wrapper"
+    }]
+    R.register(hand_written) # stands in for the tool_paths eager-load
+
+    assert_raises(ArgumentError) { R.registered_tools }
+    assert_equal 1, calls
+
+    assert_raises(ArgumentError) { R.registered_tools }
+    assert_equal 2, calls, "a broken producer must be retried, not silently skipped"
+  end
+
+  # The partial-failure case with no file-defined tools at all: a producer that
+  # registers some of its tools and then raises leaves the registry non-empty
+  # from its own work.
+  def test_a_partially_succeeding_producer_is_retried
+    calls = 0
+    McpAuthorization.config.tool_producers = [lambda {
+      calls += 1
+      R.register(generated_tool("row_1"))
+      raise ArgumentError, "row 2 is malformed"
+    }]
+
+    assert_raises(ArgumentError) { R.registered_tools }
+    assert_raises(ArgumentError) { R.registered_tools }
+
+    assert_equal 2, calls
   end
 
   # The Engine resets the registry on every code reload; generated tools have
@@ -152,9 +205,12 @@ class ToolProducersTest < Minitest::Test
     assert_equal "bad wrapper", error.message
   end
 
-  # A raising producer must not wedge the registry: the guard has to be
-  # cleared on the way out, or every later read silently returns empty.
+  # A raising producer must not wedge the registry: the reentrancy guard has to
+  # be cleared on the way out, or every later read silently returns empty. Seeded
+  # with an already-registered tool so the recovery is not an artifact of the
+  # registry happening to be empty.
   def test_a_raising_producer_leaves_the_registry_readable
+    R.register(generated_tool("hand_written"))
     McpAuthorization.config.tool_producers = [-> { raise ArgumentError, "bad wrapper" }]
     assert_raises(ArgumentError) { R.registered_tools }
 
