@@ -5,6 +5,7 @@ module McpAuthorization
     attr_accessor server_name: String
     attr_accessor server_version: String
     attr_accessor tool_paths: Array[String]
+    attr_accessor tool_producers: Array[^() -> void]
     attr_accessor shared_type_paths: Array[String]
     attr_accessor default_domain: String
     attr_accessor mount_path: String

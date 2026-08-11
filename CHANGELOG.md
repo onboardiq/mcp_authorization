@@ -4,6 +4,31 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0]
+
+A supported seam for tool classes the host generates at runtime instead of
+defining in a file under `tool_paths`. Additive and opt-in — a host that sets
+no producers behaves exactly as before. (#35)
+
+### Added
+- **`config.tool_producers`** — an array of callables that register generated tool classes. Invoked by `ToolRegistry.ensure_tools_loaded!` on the first read of a registry that has not finished loading, immediately after the `tool_paths` eager-load, and again after every `reset!`. Defaults to `[]`.
+
+  Registering generated tools previously had no supported hook, so hosts improvised one from a Rails boot callback — and both available callbacks are traps. Registering *before* the gem's own load tripped `ensure_tools_loaded!`'s old `return if @registered_tools&.any?` guard and silently suppressed every file-defined tool, leaving a near-empty `tools/list` in any environment that doesn't eager-load. Registering from `config.to_prepare` runs host code during `:run_prepare_callbacks`, which precedes `:eager_load!` and the railtie `after_initialize` that copies `config.i18n` onto `I18n` — so application code loaded there sees an empty `I18n.load_path`, and any class resolving a translation in its class body freezes `"Translation missing: …"` into its validators and option lists permanently, with the failures landing nowhere near MCP. Running producers from a registry read makes both unreachable by construction rather than by documentation.
+
+- **Boot-time registry population when the host eager-loads.** The Engine reads the registry from `after_initialize` when `config.eager_load` is on, so a malformed tool — or a producer that raises — fails the deploy rather than the first `tools/list`. Development and test stay lazy. `after_initialize` specifically: it is the earliest phase where the framework is guaranteed to be fully configured, `I18n` included.
+
+### Changed
+- **Loading completion is tracked separately from registry contents.** `ensure_tools_loaded!` previously short-circuited on `return if @registered_tools&.any?`, and `registered_tools` only triggered a load while the array was empty. That conflated "the registry has entries" with "loading finished", which is wrong as soon as loading can fail partway: `eager_load_tool_paths!` registers the file-defined tools *first*, so by the time a producer raises the array is already non-empty — as it also is when a producer registers 40 tools and raises on the 41st. Every later read then no-op'd, so a bad producer failed loudly exactly once and silently forever after, leaving a permanently incomplete surface and contradicting the documented "exceptions propagate" contract. A dedicated `@tools_loaded` flag, set only after every producer returns, replaces both guards; a raising producer is now retried on every read until it is fixed. Re-running is safe — `register` dedupes by identity and `eager_load_dir` is a no-op on an already-loaded directory.
+
+  Two consequences worth naming. A host that calls `register` directly before the first read no longer suppresses the `tool_paths` load — the silent-erasure hazard producers exist to remove is now unreachable from that direction too. And `reset!` clears the flag, so a reload still reloads.
+
+### Fixed
+- **`ensure_tools_loaded!` no longer raises on a partially-loaded Rails.** The autoloader pass guarded on the bare `Rails` constant and then called `Rails.root` / `Rails.autoloaders`. A process where `Rails` is defined but incomplete (or an unrelated module of that name) satisfied `defined?` and raised `NoMethodError`, taking `registered_tools` down with it — including for a host whose tools all come from producers and need no autoloader at all. It now probes for the methods it actually calls, matching the `defined?(Rails) && Rails.respond_to?(:env)` idiom already used in `Diagnostics`.
+
+### Internal
+- `ensure_tools_loaded!` is reentrant: a producer may read the registry (to inspect what is already registered, say) without recursing forever. The reentrancy guard is cleared in an `ensure`, so a raising producer does not wedge every later read.
+- The `tool_paths` eager-load moved into a private `eager_load_tool_paths!`, leaving `ensure_tools_loaded!` as the ordering contract it documents.
+
 ## [0.7.1]
 
 Follow-ups from the 0.7.0 review (onboardiq/mcp_authorization#31).

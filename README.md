@@ -71,6 +71,7 @@ end
 | `mount_path` | `"/mcp"` | URL prefix for MCP endpoints |
 | `default_domain` | `"default"` | Domain when no `:domain` segment in path |
 | `tool_paths` | `["app/mcp"]` | Directories where tool classes live (relative to Rails.root) |
+| `tool_producers` | `[]` | Callables that register tool classes built at runtime — see [Generated tools](#generated-tools) |
 | `shared_type_paths` | `["sig/shared"]` | Directories where shared `.rbs` type files live |
 | `context_builder` | *required* | `(request) -> context` |
 | `cli_context_builder` | `nil` | `(domain:, role:) -> context` for rake tasks |
@@ -334,6 +335,25 @@ end
 `authorization :perm` is just a convenience for `gate :requires, :perm` — internally there is one gate pipeline, not two. Multiple `gate` declarations AND together with `authorization`: the tool is shown only when every check passes. This makes tool-level gating symmetric with the field-level annotations (`@requires`, `@feature`, any custom predicate).
 
 Tools self-register when loaded. Put them anywhere under `tool_paths` (default: `app/mcp/`).
+
+### Generated tools
+
+Some tools aren't worth writing by hand — one per controller action, one per row in a config table, one per endpoint in a family. For those, register a **producer**: a callable that mints the classes and registers them.
+
+```ruby
+McpAuthorization.configure do |config|
+  config.tool_producers << -> { MyApp::GeneratedTools.register_all! }
+end
+```
+
+Producers run from `ToolRegistry.ensure_tools_loaded!` — on the first read of an empty registry, immediately after `tool_paths` is eager-loaded, and again after every reload. Two properties follow from that, and both matter:
+
+- **Don't register from a Rails boot callback instead.** Generating tools usually means loading the code they derive from, and from `config.to_prepare` that happens during `:run_prepare_callbacks` — before `:eager_load!`, and before railties copy `config.i18n` onto `I18n`. Application code loaded that early sees an empty `I18n.load_path`, so any class resolving a translation in its class body freezes `"Translation missing: …"` into its validators and option lists for the life of the process. A producer sidesteps the ordering question entirely.
+- **Don't register before the registry loads its own tools.** Historically `ensure_tools_loaded!` skipped the `tool_paths` pass once the registry was non-empty, so registering first made every file-defined tool silently disappear from `tools/list`. Producers run *after* that pass, and completion is now tracked separately from "the registry has entries", so the ordering is not yours to get right.
+
+A producer must be **idempotent**. `register` dedupes by object identity, not by `tool_name`, so minting a fresh class on every call registers a second tool under the same name and leaves `find_tool` resolving an arbitrary one. Reuse the class while its inputs are unchanged. Exceptions propagate — a malformed generated tool fails the read rather than vanishing.
+
+When the host eager-loads (production), the engine reads the registry at `after_initialize`, so a producer that raises fails the deploy instead of the first `tools/list`. Development and test stay lazy.
 
 ### Introspecting a tool class
 
