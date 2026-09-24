@@ -215,9 +215,10 @@ module McpAuthorization
       # Create an anonymous MCP::Tool subclass with this user's schemas baked in.
       #
       # The materialized +call+ enforces the compiled schema at runtime:
-      # input params are stripped of unknown or permission-gated fields
-      # before reaching the handler, and the handler's return value is
-      # projected onto the user's output schema before being serialized.
+      # a top-level param outside the caller's input schema is rejected
+      # in-band (+UnknownInputKeysError+ → +isError: true+) before the
+      # handler runs, and the handler's return value is projected onto the
+      # user's output schema before being serialized.
       #: (untyped) -> Class?
       def materialize_for(server_context)
         defn = to_mcp_definition(server_context: server_context)

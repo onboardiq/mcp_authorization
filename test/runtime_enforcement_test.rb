@@ -172,12 +172,19 @@ class RuntimeEnforcementTest < Minitest::Test
     C.reset_cache!
   end
 
-  def test_filter_input_drops_gated_param_for_unprivileged_user
+  # A gated field is outside the caller's schema, so from the caller's view it
+  # does not exist: it is rejected like any other unknown key rather than
+  # silently ignored (which reported the flag as applied). The accepted list
+  # is the caller's schema, so `force` is not named.
+  def test_filter_input_rejects_gated_param_for_unprivileged_user_as_unknown
     handler = setup_fixture
 
     ctx = StubContext.new([])  # no :admin
-    filtered = C.filter_input(handler, { id: "x", force: true }, server_context: ctx)
-    assert_equal({ id: "x" }, filtered)
+    err = assert_raises(McpAuthorization::UnknownInputKeysError) do
+      C.filter_input(handler, { id: "x", force: true }, server_context: ctx)
+    end
+    assert_equal ["force"], err.unknown_keys
+    assert_equal ["id"], err.accepted_keys
   end
 
   def test_filter_input_keeps_gated_param_for_privileged_user
@@ -188,10 +195,9 @@ class RuntimeEnforcementTest < Minitest::Test
     assert_equal({ id: "x", force: true }, filtered)
   end
 
-  # An undeclared key is a caller inventing a parameter, not a permission
-  # boundary. Dropping it returned a success-shaped, unfiltered result that
-  # an LLM then acted on (a `data: {...}` filter on a list tool moved every
-  # applicant on the page). It is rejected by default.
+  # An undeclared key is a caller inventing a parameter. Dropping it returned
+  # a success-shaped, unfiltered result that an LLM then acted on (a
+  # `data: {...}` filter on a list tool moved every applicant on the page).
   def test_filter_input_rejects_unknown_keys_by_default
     handler = setup_fixture
 
@@ -201,8 +207,8 @@ class RuntimeEnforcementTest < Minitest::Test
     end
     assert_equal ["unknown"], err.unknown_keys
     assert_equal ["force", "id"], err.accepted_keys
-    assert_match(/Unknown parameter: unknown\./, err.message)
-    assert_match(/accepts: force, id\./, err.message)
+    assert_match(/\AUnknown parameter: unknown\. Nothing was executed\. Accepted parameters: force, id\./, err.message)
+    assert_match(/do not re-run this call without it/, err.message)
   end
 
   def test_filter_input_rejects_unknown_string_keys_and_names_them_all
@@ -215,36 +221,24 @@ class RuntimeEnforcementTest < Minitest::Test
     assert_match(/Unknown parameters: data, limit\./, err.message)
   end
 
-  # A declared-but-gated field the caller cannot see is still dropped silently
-  # and is never named in the accepted list — the field's existence must not
-  # leak. Only never-declared keys are reported.
-  def test_filter_input_gated_field_is_dropped_silently_and_not_reported_as_unknown
+  # LLM clients send explicit nulls; a null-valued unknown key is still unknown.
+  def test_filter_input_rejects_unknown_key_with_nil_value
     handler = setup_fixture
-    ctx = StubContext.new([]) # no :admin, cannot see `force`
-
-    filtered = C.filter_input(handler, { id: "x", force: true }, server_context: ctx)
-    assert_equal({ id: "x" }, filtered)
 
     err = assert_raises(McpAuthorization::UnknownInputKeysError) do
-      C.filter_input(handler, { id: "x", force: true, bogus: 1 }, server_context: ctx)
+      C.filter_input(handler, { id: "x", limit: nil }, server_context: StubContext.new([:admin]))
     end
-    assert_equal ["bogus"], err.unknown_keys
-    assert_equal ["id"], err.accepted_keys
+    assert_equal ["limit"], err.unknown_keys
   end
 
-  def test_filter_input_drops_unknown_keys_when_rejection_disabled
+  def test_filter_input_drops_unknown_and_gated_keys_when_rejection_disabled
     handler = setup_fixture
     McpAuthorization.config.reject_unknown_input_keys = false
 
-    filtered = C.filter_input(handler, { id: "x", unknown: "leak" }, server_context: StubContext.new([:admin]))
+    filtered = C.filter_input(handler, { id: "x", force: true, unknown: "leak" }, server_context: StubContext.new([]))
     assert_equal({ id: "x" }, filtered)
   ensure
     McpAuthorization.config.reject_unknown_input_keys = true
-  end
-
-  def test_declared_input_keys_ignores_predicate_gating
-    handler = setup_fixture
-    assert_equal ["force", "id"], C.declared_input_keys(handler).sort
   end
 
   def test_filter_output_drops_gated_variant_shape

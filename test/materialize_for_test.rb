@@ -113,6 +113,6 @@ class MaterializeForTest < Minitest::Test
     assert_nil response.structured_content
     text = response.content.first[:text]
     assert_match(/\Afixture_with_output: Unknown parameters: data, limit\./, text)
-    assert_match(/accepts: id\./, text)
+    assert_match(/Accepted parameters: id\./, text)
   end
 end

@@ -43,9 +43,11 @@ require_relative "diagnostics"
 
 module McpAuthorization
   # Raised by +RbsSchemaCompiler.filter_input+ when the caller sent a
-  # top-level param the tool never declared. +unknown_keys+ are the offending
-  # names; +accepted_keys+ are the names visible to *this* caller, so a
-  # gated field the caller cannot see is never named in the message.
+  # top-level param outside its compiled input schema. +unknown_keys+ are
+  # the offending names; +accepted_keys+ are the names in the caller's
+  # schema. The message is written for an LLM that will read it as a tool
+  # result: it must not suggest re-running without the parameter, because
+  # for a filter that means acting on an unfiltered result.
   class UnknownInputKeysError < ArgumentError
     attr_reader :unknown_keys, :accepted_keys
 
@@ -53,10 +55,14 @@ module McpAuthorization
     def initialize(unknown_keys, accepted_keys)
       @unknown_keys = unknown_keys
       @accepted_keys = accepted_keys
+      accepted = accepted_keys.empty? ? "none" : accepted_keys.join(", ")
       super(
         "Unknown parameter#{"s" if unknown_keys.size > 1}: #{unknown_keys.join(", ")}. " \
-        "This tool accepts: #{accepted_keys.join(", ")}. " \
-        "The call was rejected and nothing was executed — retry with only accepted parameters."
+        "Nothing was executed. Accepted parameters: #{accepted}. " \
+        "If your task depends on a rejected parameter (for example filtering by it), " \
+        "do not re-run this call without it: the result would be unfiltered. " \
+        "Do not substitute another parameter to approximate it. " \
+        "Use a tool that supports it, or tell the user it is not possible."
       )
     end
   end
@@ -101,27 +107,6 @@ module McpAuthorization
   # - +@desc(text)+, +@title(text)+ — JSON Schema annotation keywords
   #
   class RbsSchemaCompiler
-    # Every predicate passes: the context used to compile the full, ungated
-    # input schema for +declared_input_keys+. +respond_to?+ is answered for
-    # any predicate so +predicate_excluded?+ never falls through to the
-    # +requires+ backward-compat branch or the unknown-predicate warning.
-    class PermissiveContext
-      #: (untyped, ?bool) -> bool
-      def respond_to?(name, _include_all = false)
-        name.to_s.end_with?("?") || super
-      end
-
-      #: (untyped, *untyped) -> untyped
-      def method_missing(name, *_args)
-        name.to_s.end_with?("?") ? true : super
-      end
-
-      #: (untyped, ?bool) -> bool
-      def respond_to_missing?(name, include_all = false)
-        name.to_s.end_with?("?") || super
-      end
-    end
-
     class << self
       # ---------------------------------------------------------------
       # Public API
@@ -167,17 +152,16 @@ module McpAuthorization
 
       # Filter incoming params against the user's compiled input schema.
       #
-      # Any key that is not in the schema for this user is dropped — including
-      # +@requires+-gated fields the user lacks permission for. This is the
-      # runtime enforcement counterpart to the input-shaping that
-      # +compile_input+ did.
-      #
-      # A top-level key the tool never declared for *anyone* is a different
-      # case: it is not a permission boundary, it is a caller (typically an
-      # LLM) inventing a parameter. Dropping it silently returns a
-      # successful-looking but unfiltered result, so by default such keys
-      # raise +UnknownInputKeysError+ instead. See
-      # +config.reject_unknown_input_keys+.
+      # This is the runtime enforcement counterpart to the input-shaping
+      # that +compile_input+ did. The caller's schema is the contract: a
+      # top-level key outside it — whether the tool never declared it or
+      # declared it behind a predicate this caller fails — does not exist
+      # from the caller's point of view. Such a key used to be dropped
+      # silently, which returned a successful-looking result that ignored
+      # part of the request (an invented filter, a gated flag). By default
+      # it now raises +UnknownInputKeysError+; see
+      # +config.reject_unknown_input_keys+. Keys nested inside a declared
+      # object param are still projected silently.
       #
       # @param handler_class [Class]
       # @param params [Hash] Params as received from the MCP client.
@@ -188,35 +172,21 @@ module McpAuthorization
         return params unless params.is_a?(Hash)
         schema = compile_input_for_filter(handler_class, server_context: server_context)
         return params unless schema
-        reject_unknown_input_keys!(handler_class, params, schema) if McpAuthorization.config.reject_unknown_input_keys
+        reject_unknown_input_keys!(params, schema) if McpAuthorization.config.reject_unknown_input_keys
         project_against_schema(params, schema, defs_from(schema))
       end
 
-      # Top-level param names the tool declares for any caller — predicate
-      # gating ignored. The complement of this set is "never declared", as
-      # opposed to "declared but hidden from this caller".
-      #: (untyped) -> Array[String]
-      def declared_input_keys(handler_class)
-        schema = compile_input_for_filter(handler_class, server_context: PermissiveContext.new)
-        return [] unless schema.is_a?(Hash)
-        (schema[:properties] || {}).keys.map(&:to_s)
-      end
-
-      # Raise when +params+ carries a top-level key no caller could ever send.
-      # +visible_schema+ is this caller's compiled schema: its property names
-      # are the accepted list in the message, so gated fields stay unnamed.
-      # An explicitly open input object (+additionalProperties+ set and not
-      # false) has no unknown keys by definition.
-      #: (untyped, Hash[untyped, untyped], Hash[Symbol, untyped]) -> void
-      def reject_unknown_input_keys!(handler_class, params, visible_schema)
-        addl = visible_schema[:additionalProperties]
-        return if !addl.nil? && addl != false
-
-        unknown = params.keys.map(&:to_s) - declared_input_keys(handler_class)
+      # Raise when +params+ carries a top-level key outside +schema+'s
+      # properties. Both the unknown and the accepted names come from the
+      # caller's own schema, so the message reveals nothing +tools/list+ did
+      # not already show this caller.
+      #: (Hash[untyped, untyped], Hash[Symbol, untyped]) -> void
+      def reject_unknown_input_keys!(params, schema)
+        accepted = (schema[:properties] || {}).keys.map(&:to_s)
+        unknown = params.keys.map(&:to_s) - accepted
         return if unknown.empty?
 
-        accepted = (visible_schema[:properties] || {}).keys.map(&:to_s).sort
-        raise UnknownInputKeysError.new(unknown, accepted)
+        raise UnknownInputKeysError.new(unknown, accepted.sort)
       end
 
       # Filter the handler's return value against the user's compiled output

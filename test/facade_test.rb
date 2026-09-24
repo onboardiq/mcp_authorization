@@ -552,7 +552,7 @@ class FacadeTest < Minitest::Test
     assert_match(/not valid JSON/, err.message)
   end
 
-  def test_dispatch_strips_permission_gated_fields_like_a_direct_call
+  def test_dispatch_rejects_permission_gated_fields_like_a_direct_call
     define_standard_tools
     facet!
     ctx = StubContext.new([:view_widgets, :manage_widgets]) # not :admin
@@ -563,8 +563,10 @@ class FacadeTest < Minitest::Test
       tool_name: "update_widget_#{domain}",
       arguments: { id: "w3", meta: { note: "x" }, force: true }
     )
-    assert_equal false, response.structured_content[:forced],
-      "@requires(:admin) input must be stripped before the handler, same as a direct call"
+    assert response.error?, "@requires(:admin) input is outside this caller's schema and must be rejected before the handler, same as a direct call"
+    text = response.content.first[:text]
+    assert_match(/\Aupdate_widget_#{domain}: Unknown parameter: force\./, text)
+    assert_match(/Accepted parameters: id, meta\./, text)
   end
 
   # --------------------------------------------------------------------------
@@ -661,15 +663,14 @@ class FacadeTest < Minitest::Test
     assert response.error?
     text = response.content.first[:text]
     assert_match(/\Alist_widgets_#{domain}: Unknown parameters: data, limit\./, text)
-    assert_match(/accepts: status\./, text)
+    assert_match(/Accepted parameters: status\./, text)
   end
 
-  # Gated fields keep the old silent-drop semantics through the facade too:
-  # a viewer sending the admin-only `force` is not told the field exists.
-  def test_dispatch_still_drops_gated_field_silently_for_unprivileged_caller
+  # The same gated field is accepted for a caller whose schema includes it.
+  def test_dispatch_accepts_gated_field_for_privileged_caller
     define_standard_tools
     facet!
-    ctx = StubContext.new([:view_widgets, :manage_widgets]) # no :admin
+    ctx = full_ctx
     facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
 
     response = facade.call(
@@ -678,6 +679,6 @@ class FacadeTest < Minitest::Test
       arguments: { id: "w1", meta: { note: "n" }, force: true }
     )
     refute response.error?
-    assert_equal false, response.structured_content[:forced]
+    assert_equal true, response.structured_content[:forced]
   end
 end

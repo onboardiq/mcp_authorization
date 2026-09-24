@@ -257,8 +257,8 @@ module McpAuthorization
       # objects as JSON strings; the facade's own contract only knows
       # `arguments: object`, so string blobs are parsed here — both the
       # blob itself and any top-level value whose target type is an object
-      # or array. Unknown / permission-gated fields are then stripped by
-      # the target's filter_input as in a direct call.
+      # or array. Keys outside the target's schema are then rejected by the
+      # target's filter_input as in a direct call.
       #: (singleton(McpAuthorization::Tool), untyped, untyped) -> Hash[Symbol, untyped]
       def coerce_arguments(tool_class, raw, server_context)
         parsed = raw.is_a?(String) ? parse_json_blob(raw, "arguments") : raw

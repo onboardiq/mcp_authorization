@@ -6,20 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.9.0]
 
-Undeclared params are rejected instead of silently dropped. Behavior change on
-by default — opt out with `config.reject_unknown_input_keys = false`.
+Top-level params outside the caller's input schema are rejected instead of
+silently dropped. Behavior change on by default — opt out with
+`config.reject_unknown_input_keys = false`.
 
 ### Changed
-- **`RbsSchemaCompiler.filter_input` raises `McpAuthorization::UnknownInputKeysError`** when the params carry a top-level key the tool never declared for any caller. Previously every undeclared key was dropped by the same closed-by-default projection that hides `@requires`-gated fields, so a `tools/call` with an invented filter (`list_applicants(stage_id:, data: { booked_meeting: "true" }, limit: 100)`) returned `success: true` with the *unfiltered* page — and the calling agent moved every applicant on it, reporting the filter as applied. The two cases are now distinct: a field the tool declares but this caller cannot see is still dropped silently (its existence must not leak); a field no caller could ever send is an error. The error's `unknown_keys` / `accepted_keys` and its message list the offending names and the params visible to *this* caller. An input object the author explicitly opened (`additionalProperties` set and not `false`) is exempt.
-- **Materialized tools return the rejection in-band.** `Tool.materialize_for`'s `call` rescues `UnknownInputKeysError` and returns `MCP::Tool::Response.new([...], error: true)` with the text `<tool_name>: <message>`, so the model reads it as a tool result and can retry, rather than the SDK wrapping it as a JSON-RPC `-32603`. Facade dispatch reaches the target's materialized `call`, so a facade caller — which only ever saw `arguments: object` — gets the same in-band error naming the inner tool.
+- **`RbsSchemaCompiler.filter_input` raises `McpAuthorization::UnknownInputKeysError`** when the params carry a top-level key that is not in the caller's compiled input schema. Previously every such key was dropped by the closed-by-default projection, so a `tools/call` with an invented filter (`list_applicants(stage_id:, data: { booked_meeting: "true" }, limit: 100)`) returned `success: true` with the *unfiltered* page — and the calling agent moved every applicant on it, reporting the filter as applied. The same projection let a non-admin's `force: true` through as a silent no-op the agent then reported as done. The caller's schema is now the contract: a key the tool never declared and a key gated behind a predicate this caller fails are both outside it and are both rejected. The handler never runs, so a gated field is still never applied for a caller who lacks it. The error's `unknown_keys` / `accepted_keys` and its message name the offending keys and the params in this caller's schema — nothing `tools/list` did not already show that caller. Keys nested inside a declared object param are still projected silently; this release covers the top level only.
+- **The message is written for the model that reads it.** It states that nothing was executed, lists the accepted params, and tells the caller not to re-run the call without the rejected parameter (the result would be unfiltered) and not to approximate it with another one. A message that said "retry with accepted parameters" would have reproduced the incident.
+- **Materialized tools return the rejection in-band.** `Tool.materialize_for`'s `call` rescues `UnknownInputKeysError` and returns `MCP::Tool::Response.new([...], error: true)` with the text `<tool_name>: <message>`, rather than the SDK wrapping it as a JSON-RPC `-32603` that names the facade instead of the tool. Facade dispatch reaches the target's materialized `call`, so a facade caller — which only ever saw `arguments: object` — gets the same in-band error naming the inner tool. The non-materialized `Tool.call` lets the error propagate.
 
 ### Added
-- **`config.reject_unknown_input_keys`** (default `true`). `false` restores the 0.8 drop-everything behavior.
-- **`RbsSchemaCompiler.declared_input_keys(handler_class)`** — the tool's top-level param names with predicate gating ignored, compiled against a new `RbsSchemaCompiler::PermissiveContext` that answers every predicate `true`.
+- **`config.reject_unknown_input_keys`** (default `true`). `false` restores the 0.8 drop-everything behavior for both unknown and gated keys.
 
 ### Migration notes
 - A host that overrides `materialize_for` (or calls `filter_input` directly) must `rescue McpAuthorization::UnknownInputKeysError` and build its own error response; until it does, the rejection still happens but surfaces as a JSON-RPC internal error whose message carries the same text.
-- Any client or test that relied on extra keys being ignored will now see an error. That reliance was the bug this release exists to remove; if a param is legitimately optional and open-ended, declare it (e.g. `Hash[String, untyped]`, which compiles to an open object and is exempt).
+- Any client or test that relied on a top-level extra key being ignored — invented or gated — now sees an error. That reliance was the bug this release removes. A client that sends the full field set regardless of the caller's permissions must send only the fields in that caller's `tools/list` schema.
 
 ## [0.8.0]
 

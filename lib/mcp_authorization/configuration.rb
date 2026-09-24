@@ -101,12 +101,12 @@ module McpAuthorization
     attr_accessor :strict_schema
 
     # When true (the default), a +tools/call+ whose params carry a top-level
-    # key the tool never declared is rejected with
+    # key outside the caller's compiled input schema is rejected with
     # +McpAuthorization::UnknownInputKeysError+ instead of having the key
-    # silently dropped. Keys the tool declares but the caller cannot see
-    # (+@requires+ / predicate-gated) are still dropped silently — that is a
-    # permission boundary and must not leak the field's existence. Set to
-    # false to restore the pre-0.9 drop-everything behavior.
+    # silently dropped. A field gated by a predicate this caller fails is
+    # outside that schema and is rejected the same way — the caller's
+    # schema is the contract. Set to false to restore the pre-0.9
+    # drop-everything behavior.
     #: bool
     attr_accessor :reject_unknown_input_keys
 

@@ -5,8 +5,7 @@ module McpAuthorization
     def self.compile_input: (untyped, server_context: untyped) -> Hash[Symbol, untyped]
     def self.compile_output: (untyped, server_context: untyped) -> Hash[Symbol, untyped]?
     def self.filter_input: (untyped, Hash[untyped, untyped], server_context: untyped) -> Hash[untyped, untyped]
-    def self.declared_input_keys: (untyped) -> Array[String]
-    def self.reject_unknown_input_keys!: (untyped, Hash[untyped, untyped], Hash[Symbol, untyped]) -> void
+    def self.reject_unknown_input_keys!: (Hash[untyped, untyped], Hash[Symbol, untyped]) -> void
     def self.filter_output: (untyped, untyped, server_context: untyped) -> untyped
     def self.strict_sanitize: (Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
     def self.shared_type_cache: () -> Hash[String, untyped]
