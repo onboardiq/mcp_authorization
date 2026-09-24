@@ -100,6 +100,16 @@ module McpAuthorization
     #: bool
     attr_accessor :strict_schema
 
+    # When true (the default), a +tools/call+ whose params carry a top-level
+    # key the tool never declared is rejected with
+    # +McpAuthorization::UnknownInputKeysError+ instead of having the key
+    # silently dropped. Keys the tool declares but the caller cannot see
+    # (+@requires+ / predicate-gated) are still dropped silently — that is a
+    # permission boundary and must not leak the field's existence. Set to
+    # false to restore the pre-0.9 drop-everything behavior.
+    #: bool
+    attr_accessor :reject_unknown_input_keys
+
     # Cache for the +tools/list+ response. Opt-in; defaults to no caching.
     # Accepts:
     #   nil / false  — no caching (default)
@@ -179,6 +189,7 @@ module McpAuthorization
       @context_builder = nil
       @cli_context_builder = nil
       @strict_schema = false
+      @reject_unknown_input_keys = true
       @tools_list_cache = nil
       @tools_list_cache_ttl = 3600
       @tools_list_cache_redis = nil

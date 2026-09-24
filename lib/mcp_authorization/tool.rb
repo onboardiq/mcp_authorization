@@ -236,9 +236,15 @@ module McpAuthorization
 
           define_singleton_method(:call) do |server_context: nil, **params|
             effective_ctx = server_context || ctx
-            filtered_params = McpAuthorization::RbsSchemaCompiler.filter_input(
-              handler, params, server_context: effective_ctx
-            )
+            begin
+              filtered_params = McpAuthorization::RbsSchemaCompiler.filter_input(
+                handler, params, server_context: effective_ctx
+              )
+            rescue McpAuthorization::UnknownInputKeysError => e
+              # In-band tool error (isError: true), not a JSON-RPC failure: the
+              # model reads the message and can retry with accepted params.
+              next MCP::Tool::Response.new([{ type: "text", text: "#{defn[:name]}: #{e.message}" }], error: true)
+            end
             raw = handler.new(server_context: effective_ctx).call(**symbolize.call(filtered_params))
             result = McpAuthorization::RbsSchemaCompiler.filter_output(
               handler, raw, server_context: effective_ctx

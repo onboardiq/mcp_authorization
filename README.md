@@ -27,7 +27,14 @@ Tool-level `authorization :perm` is RBAC (calls `current_user.can?`). Tool-level
 
 `@requires` is a security boundary, not a hint. At tool-call time the gem:
 
-- **Filters inbound params** against the user's compiled input schema. Gated fields, and any keys not declared in the schema at all, are dropped before the handler's `#call` is invoked. A handler that takes `force:` gated behind `@requires(:admin)` will see `force: false` (its default) for non-admins even if the MCP client sends `force: true` in the raw JSON-RPC payload.
+- **Filters inbound params** against the user's compiled input schema. Gated fields are dropped before the handler's `#call` is invoked. A handler that takes `force:` gated behind `@requires(:admin)` will see `force: false` (its default) for non-admins even if the MCP client sends `force: true` in the raw JSON-RPC payload.
+- **Rejects invented params.** A top-level key the tool never declared for *any* caller is not a permission boundary — it is a client (typically an LLM that never saw the per-tool schema, e.g. behind a [facade](#tool-grouping-facades)) making up a filter. Dropping it silently hands back a success-shaped, unfiltered result the model then acts on. So `filter_input` raises `McpAuthorization::UnknownInputKeysError` and the materialized tool turns it into an in-band tool error (`isError: true`) whose text names the unknown keys and the params this caller may use:
+
+  ```
+  list_applicants: Unknown parameters: data, limit. This tool accepts: funnel_id, page, per_page, query, stage_id. The call was rejected and nothing was executed — retry with only accepted parameters.
+  ```
+
+  The accepted list is the *caller's* schema, so a gated field the caller cannot see is still dropped silently and never named. Set `config.reject_unknown_input_keys = false` to restore the pre-0.9 drop-everything behavior. A host that overrides `materialize_for` or calls `filter_input` directly must rescue `UnknownInputKeysError` itself; unrescued it surfaces as a JSON-RPC internal error carrying the same message.
 - **Projects the handler's return value** onto the user's compiled output schema. A variant hidden by `@requires` has its shape unavailable, so if the handler erroneously emits that variant's extra fields, they are stripped before serialization. A handler bug or refactor accident cannot leak admin-only fields to a non-admin.
 
 This means handler authors don't have to remember to re-check `can?` at every branch -- the schema *is* the boundary. `can?` inside `#call` is still useful for logic that changes behavior (not just field visibility), but it is no longer load-bearing for security.
@@ -76,6 +83,7 @@ end
 | `context_builder` | *required* | `(request) -> context` |
 | `cli_context_builder` | `nil` | `(domain:, role:) -> context` for rake tasks |
 | `strict_schema` | `false` | Emit stricter compiled schemas |
+| `reject_unknown_input_keys` | `true` | Reject a `tools/call` carrying a top-level param the tool never declared, instead of silently dropping it — see [Enforcement, not just shaping](#enforcement-not-just-shaping) |
 | `tools_list_cache` | `nil` | `:memory`, `:redis`, or any object responding to `get`/`set` — see [Caching `tools/list`](#caching-toolslist) |
 | `tools_list_cache_ttl` | `3600` | Per-entry TTL in seconds |
 | `tools_list_cache_redis` | `nil` | Explicit Redis client for the `:redis` store |

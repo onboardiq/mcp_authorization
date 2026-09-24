@@ -90,4 +90,29 @@ class MaterializeForTest < Minitest::Test
     text_body = response.content.first[:text]
     assert_equal response.structured_content, JSON.parse(text_body, symbolize_names: true)
   end
+
+  # --------------------------------------------------------------------------
+  # Unknown params come back as an in-band tool error, not a JSON-RPC failure
+  # --------------------------------------------------------------------------
+
+  def test_unknown_param_returns_is_error_response_and_never_reaches_handler
+    load_handler(HANDLER_WITH_OUTPUT, "fixture_handler_with_output.rb")
+    handler_class = FixtureHandlerWithOutput
+
+    tool_class = Class.new(McpAuthorization::Tool) do
+      tool_name "fixture_with_output"
+      dynamic_contract handler_class
+    end
+
+    ctx = StubContext.new([:admin])
+    materialized = tool_class.materialize_for(ctx)
+    response = materialized.call(server_context: ctx, id: "abc", data: { booked: "true" }, limit: 100)
+
+    assert_instance_of MCP::Tool::Response, response
+    assert response.error?, "an undeclared param must surface as isError: true"
+    assert_nil response.structured_content
+    text = response.content.first[:text]
+    assert_match(/\Afixture_with_output: Unknown parameters: data, limit\./, text)
+    assert_match(/accepts: id\./, text)
+  end
 end

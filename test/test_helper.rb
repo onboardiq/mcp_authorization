@@ -40,12 +40,20 @@ module MCP
       end
     end
 
+    # Mirrors the SDK's Response(content, error: false, structured_content: nil)
+    # closely enough for the gem's own tests; `error?` is what an in-band
+    # tool error (isError: true) exposes.
     class Response
       attr_reader :content, :structured_content
 
-      def initialize(content, structured_content: nil)
+      def initialize(content, error: false, structured_content: nil)
         @content = content
+        @error = error
         @structured_content = structured_content
+      end
+
+      def error?
+        !!@error
       end
     end
   end

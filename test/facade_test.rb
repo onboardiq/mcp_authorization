@@ -641,4 +641,43 @@ class FacadeTest < Minitest::Test
         "facades are per-request synthetics and must never enter the registry"
     end
   end
+
+  # The facade advertises `arguments` as a permissive object, so a caller
+  # that never saw the per-tool schema can invent a filter. The target's
+  # filter_input must reject it in-band, naming the inner tool, instead of
+  # dispatching an unfiltered call that looks successful.
+  def test_dispatch_rejects_undeclared_arguments_in_band_naming_the_target_tool
+    define_standard_tools
+    facet!
+    ctx = full_ctx
+    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
+
+    response = facade.call(
+      server_context: ctx,
+      tool_name: "list_widgets_#{domain}",
+      arguments: { status: "active", data: { booked_meeting: "true" }, limit: 100 }
+    )
+    assert_instance_of MCP::Tool::Response, response
+    assert response.error?
+    text = response.content.first[:text]
+    assert_match(/\Alist_widgets_#{domain}: Unknown parameters: data, limit\./, text)
+    assert_match(/accepts: status\./, text)
+  end
+
+  # Gated fields keep the old silent-drop semantics through the facade too:
+  # a viewer sending the admin-only `force` is not told the field exists.
+  def test_dispatch_still_drops_gated_field_silently_for_unprivileged_caller
+    define_standard_tools
+    facet!
+    ctx = StubContext.new([:view_widgets, :manage_widgets]) # no :admin
+    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
+
+    response = facade.call(
+      server_context: ctx,
+      tool_name: "update_widget_#{domain}",
+      arguments: { id: "w1", meta: { note: "n" }, force: true }
+    )
+    refute response.error?
+    assert_equal false, response.structured_content[:forced]
+  end
 end

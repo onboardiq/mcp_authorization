@@ -188,12 +188,63 @@ class RuntimeEnforcementTest < Minitest::Test
     assert_equal({ id: "x", force: true }, filtered)
   end
 
-  def test_filter_input_drops_unknown_keys
+  # An undeclared key is a caller inventing a parameter, not a permission
+  # boundary. Dropping it returned a success-shaped, unfiltered result that
+  # an LLM then acted on (a `data: {...}` filter on a list tool moved every
+  # applicant on the page). It is rejected by default.
+  def test_filter_input_rejects_unknown_keys_by_default
     handler = setup_fixture
 
     ctx = StubContext.new([:admin])
-    filtered = C.filter_input(handler, { id: "x", unknown: "leak" }, server_context: ctx)
+    err = assert_raises(McpAuthorization::UnknownInputKeysError) do
+      C.filter_input(handler, { id: "x", unknown: "leak" }, server_context: ctx)
+    end
+    assert_equal ["unknown"], err.unknown_keys
+    assert_equal ["force", "id"], err.accepted_keys
+    assert_match(/Unknown parameter: unknown\./, err.message)
+    assert_match(/accepts: force, id\./, err.message)
+  end
+
+  def test_filter_input_rejects_unknown_string_keys_and_names_them_all
+    handler = setup_fixture
+
+    err = assert_raises(McpAuthorization::UnknownInputKeysError) do
+      C.filter_input(handler, { "id" => "x", "data" => { "k" => "v" }, "limit" => 100 }, server_context: StubContext.new([:admin]))
+    end
+    assert_equal ["data", "limit"], err.unknown_keys
+    assert_match(/Unknown parameters: data, limit\./, err.message)
+  end
+
+  # A declared-but-gated field the caller cannot see is still dropped silently
+  # and is never named in the accepted list — the field's existence must not
+  # leak. Only never-declared keys are reported.
+  def test_filter_input_gated_field_is_dropped_silently_and_not_reported_as_unknown
+    handler = setup_fixture
+    ctx = StubContext.new([]) # no :admin, cannot see `force`
+
+    filtered = C.filter_input(handler, { id: "x", force: true }, server_context: ctx)
     assert_equal({ id: "x" }, filtered)
+
+    err = assert_raises(McpAuthorization::UnknownInputKeysError) do
+      C.filter_input(handler, { id: "x", force: true, bogus: 1 }, server_context: ctx)
+    end
+    assert_equal ["bogus"], err.unknown_keys
+    assert_equal ["id"], err.accepted_keys
+  end
+
+  def test_filter_input_drops_unknown_keys_when_rejection_disabled
+    handler = setup_fixture
+    McpAuthorization.config.reject_unknown_input_keys = false
+
+    filtered = C.filter_input(handler, { id: "x", unknown: "leak" }, server_context: StubContext.new([:admin]))
+    assert_equal({ id: "x" }, filtered)
+  ensure
+    McpAuthorization.config.reject_unknown_input_keys = true
+  end
+
+  def test_declared_input_keys_ignores_predicate_gating
+    handler = setup_fixture
+    assert_equal ["force", "id"], C.declared_input_keys(handler).sort
   end
 
   def test_filter_output_drops_gated_variant_shape
