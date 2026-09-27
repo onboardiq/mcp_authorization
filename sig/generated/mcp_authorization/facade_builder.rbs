@@ -12,6 +12,7 @@ module McpAuthorization
     def self.facade_input_schema: (Array[singleton(McpAuthorization::Tool)], Symbol) -> Hash[Symbol, untyped]
     def self.child_schema_map: (Array[singleton(McpAuthorization::Tool)], untyped) -> Hash[String, untyped]
     def self.dispatch: (String, Set[String], Hash[Symbol, untyped], untyped) -> untyped
+    def self.reject_unknown_facade_keys!: (Hash[Symbol, untyped]) -> void
     def self.coerce_arguments: (singleton(McpAuthorization::Tool), untyped, untyped) -> Hash[Symbol, untyped]
     def self.parse_json_blob: (String, untyped) -> untyped
   end
