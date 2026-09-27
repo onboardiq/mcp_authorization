@@ -35,6 +35,9 @@ module McpAuthorization
     # Fallback group for uncategorized tools (default mode).
     FALLBACK_CATEGORY = :uncategorized #: Symbol
 
+    # The only two keys a facade's inputSchema declares.
+    FACADE_KEYS = %w[arguments tool_name].freeze #: Array[String]
+
     class << self
       # All facades for a domain, one per non-empty group the caller has at
       # least one permitted tool in. Empty groups produce no facade — which
@@ -266,8 +269,6 @@ module McpAuthorization
         # `arguments.server_context` cannot replace the request's own context.
         target.call(**arguments, server_context: server_context)
       end
-
-      FACADE_KEYS = %w[arguments tool_name].freeze
 
       # The facade schema declares only tool_name and arguments; a sibling key
       # is outside every caller's contract and was silently ignored, the same
