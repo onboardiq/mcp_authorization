@@ -11,6 +11,18 @@ module McpAuthorization
 
   def self.config: () -> Configuration
 
+  class UnknownInputKeysError < ::ArgumentError
+    def unknown_keys: () -> Array[String]
+    def accepted_keys: () -> Array[String]
+  end
+
+  class FacadeBuilder
+    class FacadeCallError < ::ArgumentError
+    end
+
+    FACADE_KEYS: Array[String]
+  end
+
   class Tool < MCP::Tool
     class NotAuthorizedError < StandardError
     end

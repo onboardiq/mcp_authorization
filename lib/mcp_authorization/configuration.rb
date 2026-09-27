@@ -110,6 +110,14 @@ module McpAuthorization
     #: bool
     attr_accessor :reject_unknown_input_keys
 
+    # Keys a host's client puts beside +tool_name+ and +arguments+ on a facade
+    # call and the facade should drop rather than reject — a UI envelope the
+    # client adds to every call, not a tool parameter. Empty by default, so an
+    # unrecognized sibling key is rejected. Has no effect on the keys inside
+    # +arguments+, which the target tool's own schema governs.
+    #: Array[String]
+    attr_accessor :facade_ignored_keys
+
     # Cache for the +tools/list+ response. Opt-in; defaults to no caching.
     # Accepts:
     #   nil / false  — no caching (default)
@@ -190,6 +198,7 @@ module McpAuthorization
       @cli_context_builder = nil
       @strict_schema = false
       @reject_unknown_input_keys = true
+      @facade_ignored_keys = []
       @tools_list_cache = nil
       @tools_list_cache_ttl = 3600
       @tools_list_cache_redis = nil

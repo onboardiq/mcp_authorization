@@ -488,10 +488,11 @@ class FacadeTest < Minitest::Test
     ctx = StubContext.new([:view_widgets])
     facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
 
-    err = assert_raises(ArgumentError) do
-      facade.call(server_context: ctx, tool_name: "update_widget_#{domain}", arguments: {})
-    end
-    assert_match(/unknown tool_name/, err.message)
+    response = facade.call(server_context: ctx, tool_name: "update_widget_#{domain}", arguments: {})
+    assert response.error?, "an unroutable tool_name is the caller's to fix, so it comes back in-band"
+    text = response.content.first[:text]
+    assert_match(/\Awidgets_tools: unknown tool_name "update_widget_#{domain}"\./, text)
+    assert_match(/Available tools: list_widgets_#{domain}\./, text)
   end
 
   def test_dispatch_reruns_permitted_even_for_advertised_names
@@ -546,10 +547,49 @@ class FacadeTest < Minitest::Test
     ctx = full_ctx
     facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
 
-    err = assert_raises(ArgumentError) do
-      facade.call(server_context: ctx, tool_name: "list_widgets_#{domain}", arguments: "{not json")
+    response = facade.call(server_context: ctx, tool_name: "list_widgets_#{domain}", arguments: "{not json")
+    assert response.error?
+    assert_match(/not valid JSON/, response.content.first[:text])
+  end
+
+  # `arguments` that is not an object used to dispatch the target with no
+  # params at all: the caller's filter vanished and the unfiltered default
+  # came back as a success.
+  def test_dispatch_rejects_non_object_arguments_in_band
+    define_standard_tools
+    facet!
+    ctx = full_ctx
+    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
+
+    { '[{"status":"active"}]' => "array", '"active"' => "string", 42 => "integer", nil => "null",
+      [{ status: "active" }] => "array", }.each do |bad, kind|
+      response = facade.call(server_context: ctx, tool_name: "list_widgets_#{domain}", arguments: bad)
+      assert response.error?, "#{bad.inspect} must not dispatch an unfiltered call"
+      assert_match(/arguments must be an object/, response.content.first[:text])
+      assert_match(/got #{kind}\. Nothing was executed\./, response.content.first[:text])
     end
-    assert_match(/not valid JSON/, err.message)
+  end
+
+  # A later duplicate keyword wins in Ruby, so `arguments.server_context` used
+  # to replace the request's own context: every predicate then ran against the
+  # caller's object and the gated fields were admitted.
+  def test_dispatch_ignores_a_server_context_supplied_inside_arguments
+    define_standard_tools
+    facet!
+    ctx = StubContext.new([:view_widgets, :manage_widgets]) # not :admin
+    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
+
+    response = facade.call(
+      server_context: ctx,
+      tool_name: "update_widget_#{domain}",
+      arguments: { id: "w1", meta: { note: "n" }, force: true, server_context: {} }
+    )
+    # The key binds the `server_context:` keyword rather than becoming a param,
+    # so it is never named here; the proof is that the gate still holds.
+    assert response.error?, "the injected context must not unlock @requires(:admin) fields"
+    text = response.content.first[:text]
+    assert_match(/Unknown parameter: force\./, text)
+    assert_match(/Accepted parameters: id, meta\./, text)
   end
 
   def test_dispatch_rejects_permission_gated_fields_like_a_direct_call
@@ -686,7 +726,35 @@ class FacadeTest < Minitest::Test
     assert response.error?
     text = response.content.first[:text]
     assert_match(/\Awidgets_tools: Unknown parameters: data, limit\./, text)
-    assert_match(/Accepted parameters: arguments, tool_name\./, text)
+    assert_match(/accepts only tool_name and arguments/, text)
+    # A flattened parameter is supported, just misplaced, so the guidance is to
+    # nest it — not the target's "do not re-run without it".
+    assert_match(/Re-send with data, limit inside arguments/, text)
+    refute_match(/do not re-run this call without it/, text)
+  end
+
+  def test_facade_ignored_keys_are_dropped_instead_of_rejected
+    define_standard_tools
+    facet!
+    ctx = full_ctx
+    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
+
+    McpAuthorization.config.facade_ignored_keys = %w[uiMeta]
+    response = facade.call(
+      server_context: ctx,
+      tool_name: "list_widgets_#{domain}",
+      arguments: { status: "active" },
+      uiMeta: { label: "Looking at widgets" }
+    )
+    refute response.error?, "a declared host envelope key is dropped, as before 0.9"
+
+    other = facade.call(
+      server_context: ctx, tool_name: "list_widgets_#{domain}",
+      arguments: { status: "active" }, limit: 100
+    )
+    assert other.error?, "only the declared keys are exempt"
+  ensure
+    McpAuthorization.config.facade_ignored_keys = []
   end
 
   def test_dispatch_ignores_keys_beside_tool_name_and_arguments_when_opted_out
