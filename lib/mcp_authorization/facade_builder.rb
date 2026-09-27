@@ -261,6 +261,7 @@ module McpAuthorization
         raise McpAuthorization::Tool::NotAuthorizedError unless original && target
 
         arguments = coerce_arguments(original, params[:arguments] || params["arguments"], server_context)
+        reject_reserved_argument_keys!(arguments)
         # server_context last: a later duplicate keyword wins in Ruby, so an
         # `arguments.server_context` cannot replace the request's own context.
         target.call(**arguments, server_context: server_context)
@@ -288,6 +289,20 @@ module McpAuthorization
           "This tool accepts only tool_name and arguments; a tool's own parameters go " \
           "inside arguments. Re-send with #{list} inside arguments if the tool declares " \
           "#{unknown.size > 1 ? "them" : "it"}, and omit #{unknown.size > 1 ? "them" : "it"} otherwise."
+      end
+
+      # +server_context+ binds the target's own keyword, so it can never be a
+      # tool parameter and +filter_input+ never sees it. Rejecting it keeps the
+      # release's guarantee — no key outside the schema is quietly ignored —
+      # and makes the caller's intent visible rather than silently discarded.
+      #: (Hash[Symbol, untyped]) -> void
+      def reject_reserved_argument_keys!(arguments)
+        return unless McpAuthorization.config.reject_unknown_input_keys
+        return unless arguments.key?(:server_context)
+
+        raise FacadeCallError,
+          "server_context is not a tool parameter and cannot be supplied by a caller. " \
+          "Nothing was executed. Remove it from arguments and re-send."
       end
 
       # Coerce a facade's +arguments+ blob against the target tool's

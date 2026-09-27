@@ -584,12 +584,28 @@ class FacadeTest < Minitest::Test
       tool_name: "update_widget_#{domain}",
       arguments: { id: "w1", meta: { note: "n" }, force: true, server_context: {} }
     )
-    # The key binds the `server_context:` keyword rather than becoming a param,
-    # so it is never named here; the proof is that the gate still holds.
     assert response.error?, "the injected context must not unlock @requires(:admin) fields"
-    text = response.content.first[:text]
-    assert_match(/Unknown parameter: force\./, text)
-    assert_match(/Accepted parameters: id, meta\./, text)
+    assert_match(/server_context is not a tool parameter/, response.content.first[:text])
+  end
+
+  # With the rejection off, the injected context must still not take effect:
+  # the opt-out restores the silent drop, never the escalation.
+  def test_an_injected_server_context_never_replaces_the_request_context
+    define_standard_tools
+    facet!
+    ctx = StubContext.new([:view_widgets, :manage_widgets]) # not :admin
+    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
+
+    McpAuthorization.config.reject_unknown_input_keys = false
+    response = facade.call(
+      server_context: ctx,
+      tool_name: "update_widget_#{domain}",
+      arguments: { id: "w1", meta: { note: "n" }, force: true, server_context: {} }
+    )
+    refute response.error?
+    refute response.structured_content[:forced], "@requires(:admin) must stay closed for this caller"
+  ensure
+    McpAuthorization.config.reject_unknown_input_keys = true
   end
 
   def test_dispatch_rejects_permission_gated_fields_like_a_direct_call
