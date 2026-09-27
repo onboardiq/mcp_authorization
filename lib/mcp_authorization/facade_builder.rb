@@ -153,6 +153,9 @@ module McpAuthorization
 
           define_singleton_method(:call) do |server_context: nil, **params|
             builder.send(:dispatch, domain, advertised, params, server_context || ctx)
+          rescue McpAuthorization::UnknownInputKeysError => e
+            # A key beside tool_name/arguments never reaches the target; answer in-band naming the facade.
+            MCP::Tool::Response.new([{ type: "text", text: "#{name}: #{e.message}" }], error: true)
           end
         end
       end
@@ -235,6 +238,7 @@ module McpAuthorization
       #    the same code path as a direct call.
       #: (String, Set[String], Hash[Symbol, untyped], untyped) -> untyped
       def dispatch(domain, advertised, params, server_context)
+        reject_unknown_facade_keys!(params)
         tool_name = (params[:tool_name] || params["tool_name"]).to_s
         unless advertised.include?(tool_name)
           raise ArgumentError,
@@ -250,6 +254,21 @@ module McpAuthorization
 
         arguments = coerce_arguments(original, params[:arguments] || params["arguments"], server_context)
         target.call(server_context: server_context, **arguments)
+      end
+
+      FACADE_KEYS = %w[arguments tool_name].freeze
+
+      # The facade schema declares only tool_name and arguments; a sibling key
+      # is outside every caller's contract and was silently ignored, the same
+      # gap filter_input closes for the target tool.
+      #: (Hash[Symbol, untyped]) -> void
+      def reject_unknown_facade_keys!(params)
+        return unless McpAuthorization.config.reject_unknown_input_keys
+
+        unknown = params.keys.map(&:to_s) - FACADE_KEYS
+        return if unknown.empty?
+
+        raise McpAuthorization::UnknownInputKeysError.new(unknown, FACADE_KEYS)
       end
 
       # Coerce a facade's +arguments+ blob against the target tool's

@@ -666,6 +666,42 @@ class FacadeTest < Minitest::Test
     assert_match(/Accepted parameters: status\./, text)
   end
 
+  # The facade's own schema is tool_name + arguments. A key beside them was
+  # ignored by dispatch, so an invented filter placed there ran the target
+  # unfiltered and returned success.
+  def test_dispatch_rejects_keys_beside_tool_name_and_arguments_in_band
+    define_standard_tools
+    facet!
+    ctx = full_ctx
+    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
+
+    response = facade.call(
+      server_context: ctx,
+      tool_name: "list_widgets_#{domain}",
+      arguments: { status: "active" },
+      data: { booked_meeting: "true" },
+      limit: 100
+    )
+    assert_instance_of MCP::Tool::Response, response
+    assert response.error?
+    text = response.content.first[:text]
+    assert_match(/\Awidgets_tools: Unknown parameters: data, limit\./, text)
+    assert_match(/Accepted parameters: arguments, tool_name\./, text)
+  end
+
+  def test_dispatch_ignores_keys_beside_tool_name_and_arguments_when_opted_out
+    define_standard_tools
+    facet!
+    ctx = full_ctx
+    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
+
+    McpAuthorization.config.reject_unknown_input_keys = false
+    response = facade.call(server_context: ctx, tool_name: "list_widgets_#{domain}", arguments: { status: "active" }, limit: 100)
+    refute response.error?
+  ensure
+    McpAuthorization.config.reject_unknown_input_keys = true
+  end
+
   # The same gated field is accepted for a caller whose schema includes it.
   def test_dispatch_accepts_gated_field_for_privileged_caller
     define_standard_tools
