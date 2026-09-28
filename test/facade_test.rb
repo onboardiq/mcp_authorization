@@ -749,6 +749,22 @@ class FacadeTest < Minitest::Test
     refute_match(/do not re-run this call without it/, text)
   end
 
+  # FACADE_KEYS is what dispatch accepts; facade_input_schema is what the
+  # listing advertises. A key added to one and not the other would either be
+  # advertised and rejected, or accepted and undocumented.
+  def test_facade_keys_match_the_advertised_facade_schema
+    define_standard_tools
+    facet!
+    facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: full_ctx)
+
+    advertised = facade.input_schema.to_h
+    properties = (advertised[:properties] || advertised["properties"]).keys.map(&:to_s)
+    required = (advertised[:required] || advertised["required"]).map(&:to_s)
+
+    assert_equal FB::FACADE_KEYS.sort, properties.sort
+    assert_equal FB::FACADE_KEYS.sort, required.sort
+  end
+
   def test_facade_ignored_keys_are_dropped_instead_of_rejected
     define_standard_tools
     facet!
