@@ -25,8 +25,18 @@ module McpAuthorization
     # registered tool name. Renaming the category is the fix.
     class FacadeNameCollisionError < StandardError; end
 
+    # A facade call the caller can fix from the error alone: an unroutable
+    # +tool_name+, a malformed +arguments+, or a key beside the two the
+    # facade declares. Returned in-band so the message reaches the model.
+    # Raised only before dispatch reaches the target, so it never relabels a
+    # target's own error with the facade's name.
+    class FacadeCallError < ArgumentError; end
+
     # Fallback group for uncategorized tools (default mode).
     FALLBACK_CATEGORY = :uncategorized #: Symbol
+
+    # The only two keys a facade's inputSchema declares.
+    FACADE_KEYS = %w[arguments tool_name].freeze #: Array[String]
 
     class << self
       # All facades for a domain, one per non-empty group the caller has at
@@ -153,6 +163,9 @@ module McpAuthorization
 
           define_singleton_method(:call) do |server_context: nil, **params|
             builder.send(:dispatch, domain, advertised, params, server_context || ctx)
+          rescue McpAuthorization::FacadeBuilder::FacadeCallError => e
+            # Raised before the target runs, so the facade's name is the right label.
+            MCP::Tool::Response.new([{ type: "text", text: "#{name}: #{e.message}" }], error: true)
           end
         end
       end
@@ -235,10 +248,12 @@ module McpAuthorization
       #    the same code path as a direct call.
       #: (String, Set[String], Hash[Symbol, untyped], untyped) -> untyped
       def dispatch(domain, advertised, params, server_context)
+        reject_unknown_facade_keys!(params)
         tool_name = (params[:tool_name] || params["tool_name"]).to_s
         unless advertised.include?(tool_name)
-          raise ArgumentError,
-            "unknown tool_name #{tool_name.inspect}; expected one of #{advertised.to_a.sort.inspect}"
+          raise FacadeCallError,
+            "unknown tool_name #{tool_name.inspect}. Nothing was executed. " \
+            "Available tools: #{advertised.to_a.sort.join(", ")}."
         end
 
         candidates = McpAuthorization::ToolRegistry.tools_by_domain[domain] || []
@@ -249,7 +264,46 @@ module McpAuthorization
         raise McpAuthorization::Tool::NotAuthorizedError unless original && target
 
         arguments = coerce_arguments(original, params[:arguments] || params["arguments"], server_context)
-        target.call(server_context: server_context, **arguments)
+        reject_reserved_argument_keys!(arguments)
+        # server_context last: a later duplicate keyword wins in Ruby, so an
+        # `arguments.server_context` cannot replace the request's own context.
+        target.call(**arguments, server_context: server_context)
+      end
+
+      # The facade schema declares only tool_name and arguments; a sibling key
+      # is outside every caller's contract and was silently ignored, the same
+      # gap filter_input closes for the target tool. The guidance differs from
+      # the target's: a flattened parameter is supported, it is just in the
+      # wrong place, so the caller is told to nest it rather than to give up.
+      # +config.ignored_input_keys+ names host envelope keys to drop instead.
+      #: (Hash[Symbol, untyped]) -> void
+      def reject_unknown_facade_keys!(params)
+        return unless McpAuthorization.config.reject_unknown_input_keys
+
+        ignored = McpAuthorization.config.ignored_input_keys.map(&:to_s)
+        unknown = params.keys.map(&:to_s) - FACADE_KEYS - ignored
+        return if unknown.empty?
+
+        list = unknown.join(", ")
+        raise FacadeCallError,
+          "Unknown parameter#{"s" if unknown.size > 1}: #{list}. Nothing was executed. " \
+          "This tool accepts only tool_name and arguments; a tool's own parameters go " \
+          "inside arguments. Re-send with #{list} inside arguments if the tool declares " \
+          "#{unknown.size > 1 ? "them" : "it"}, and omit #{unknown.size > 1 ? "them" : "it"} otherwise."
+      end
+
+      # +server_context+ binds the target's own keyword, so it can never be a
+      # tool parameter and +filter_input+ never sees it. Rejecting it keeps the
+      # release's guarantee — no key outside the schema is quietly ignored —
+      # and makes the caller's intent visible rather than silently discarded.
+      #: (Hash[Symbol, untyped]) -> void
+      def reject_reserved_argument_keys!(arguments)
+        return unless McpAuthorization.config.reject_unknown_input_keys
+        return unless arguments.key?(:server_context)
+
+        raise FacadeCallError,
+          "server_context is not a tool parameter and cannot be supplied by a caller. " \
+          "Nothing was executed. Remove it from arguments and re-send."
       end
 
       # Coerce a facade's +arguments+ blob against the target tool's
@@ -257,12 +311,19 @@ module McpAuthorization
       # objects as JSON strings; the facade's own contract only knows
       # `arguments: object`, so string blobs are parsed here — both the
       # blob itself and any top-level value whose target type is an object
-      # or array. Unknown / permission-gated fields are then stripped by
-      # the target's filter_input as in a direct call.
+      # or array. Keys outside the target's schema are then rejected by the
+      # target's filter_input as in a direct call.
       #: (singleton(McpAuthorization::Tool), untyped, untyped) -> Hash[Symbol, untyped]
       def coerce_arguments(tool_class, raw, server_context)
         parsed = raw.is_a?(String) ? parse_json_blob(raw, "arguments") : raw
-        return {} unless parsed.is_a?(Hash)
+        # An empty hash here used to mean "call the target with no arguments",
+        # so a caller that sent an array, a scalar or nil got the unfiltered
+        # default result reported as a success.
+        unless parsed.is_a?(Hash)
+          raise FacadeCallError,
+            "arguments must be an object mapping parameter names to values; got " \
+            "#{parsed.nil? ? "null" : parsed.class.name.downcase}. Nothing was executed."
+        end
 
         schema = tool_class.dynamic_input_schema(server_context: server_context)
         properties = schema.is_a?(Hash) ? (schema[:properties] || schema["properties"] || {}) : {}
@@ -282,7 +343,8 @@ module McpAuthorization
       def parse_json_blob(string, field)
         JSON.parse(string)
       rescue JSON::ParserError => e
-        raise ArgumentError, "#{field} was sent as a string but is not valid JSON: #{e.message}"
+        raise FacadeCallError,
+          "#{field} was sent as a string but is not valid JSON: #{e.message}. Nothing was executed."
       end
     end
   end

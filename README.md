@@ -18,7 +18,7 @@ The gem gives you three independent controls over what each user sees:
 | Layer | Mechanism | Effect |
 |---|---|---|
 | **Tool visibility** | `authorization :manage_workflows` (RBAC) or `gate :feature, :sms` (any predicate) on the tool class | Tool hidden entirely from users who fail any check |
-| **Input fields** | `@requires(:backward_routing)` or `@feature(:sms)` on a param in `#:` annotation | Field excluded from the input schema *and* stripped from inbound params at call time |
+| **Input fields** | `@requires(:backward_routing)` or `@feature(:sms)` on a param in `#:` annotation | Field excluded from the input schema; a top-level one sent anyway is rejected at call time, a nested one is stripped |
 | **Output variants** | `@requires(:backward_routing)` or `@feature(:sms)` on a variant in `@rbs type output` | Variant excluded from the `oneOf` *and* fields projected out of the handler's return value before it crosses the wire |
 
 Tool-level `authorization :perm` is RBAC (calls `current_user.can?`). Tool-level `gate :predicate, :value` and the field-level annotations are generic — any predicate name works, as long as the server context implements `{predicate}?(value)`. See [Generic predicate tags](#generic-predicate-tags) below.
@@ -27,7 +27,13 @@ Tool-level `authorization :perm` is RBAC (calls `current_user.can?`). Tool-level
 
 `@requires` is a security boundary, not a hint. At tool-call time the gem:
 
-- **Filters inbound params** against the user's compiled input schema. Gated fields, and any keys not declared in the schema at all, are dropped before the handler's `#call` is invoked. A handler that takes `force:` gated behind `@requires(:admin)` will see `force: false` (its default) for non-admins even if the MCP client sends `force: true` in the raw JSON-RPC payload.
+- **Rejects inbound params outside the caller's compiled input schema.** The schema the caller received from `tools/list` is the contract. A top-level key outside it — one the tool never declared, or one gated behind a predicate this caller fails — does not exist from the caller's point of view. Such a key used to be dropped silently, which returned a success-shaped result that ignored part of the request: an LLM that never saw the per-tool schema (e.g. behind a [facade](#tool-grouping-facades)) invented a filter, got the *unfiltered* page back as `success: true`, and acted on it; a non-admin sending `force: true` was told the flag was applied. So `filter_input` raises `McpAuthorization::UnknownInputKeysError` and the materialized tool returns it as an in-band tool error (`isError: true`). The text is written for a model that will read it as a tool result:
+
+  ```
+  list_applicants: Unknown parameters: data, limit. Nothing was executed. Accepted parameters: funnel_id, page, per_page, query, stage_id. If your task depends on a rejected parameter (for example filtering by it), do not re-run this call without it: the result would be unfiltered. Do not substitute another parameter to approximate it. Use a tool that supports it, or tell the user it is not possible.
+  ```
+
+  Both lists come from the caller's own schema, so the message reveals nothing `tools/list` did not already show that caller. The handler never runs, so a gated field is still never applied for a caller who lacks it — the boundary holds, it just stops being silent. A facade call is checked twice: a key beside `tool_name` and `arguments` is rejected by the facade, which tells the caller to re-send it inside `arguments` (a flattened parameter is supported, just misplaced), and a key inside `arguments` by the target tool, which tells it not to re-run without the parameter. Name a client's envelope key in `config.ignored_input_keys` to have it dropped instead, on both surfaces. Keys nested inside a declared object param are still projected silently. With `strict_schema` on, the compiled root carries `additionalProperties: false`, so an MCP SDK that validates arguments (`validate_tool_call_arguments`, on by default in the `mcp` gem) rejects the call with its own generic message before this one is produced; turn that validation off on the server if the model must read the guidance. Set `config.reject_unknown_input_keys = false` to restore the pre-0.9 drop-everything behavior. A host that overrides `materialize_for` or calls `filter_input` directly must rescue `UnknownInputKeysError` itself; unrescued it surfaces as a JSON-RPC internal error carrying the same message. The non-materialized `Tool.call` lets it propagate.
 - **Projects the handler's return value** onto the user's compiled output schema. A variant hidden by `@requires` has its shape unavailable, so if the handler erroneously emits that variant's extra fields, they are stripped before serialization. A handler bug or refactor accident cannot leak admin-only fields to a non-admin.
 
 This means handler authors don't have to remember to re-check `can?` at every branch -- the schema *is* the boundary. `can?` inside `#call` is still useful for logic that changes behavior (not just field visibility), but it is no longer load-bearing for security.
@@ -76,6 +82,8 @@ end
 | `context_builder` | *required* | `(request) -> context` |
 | `cli_context_builder` | `nil` | `(domain:, role:) -> context` for rake tasks |
 | `strict_schema` | `false` | Emit stricter compiled schemas |
+| `reject_unknown_input_keys` | `true` | Reject a `tools/call` carrying a top-level param outside the caller's compiled input schema (undeclared, or gated behind a predicate the caller fails) instead of silently dropping it — see [Enforcement, not just shaping](#enforcement-not-just-shaping) |
+| `ignored_input_keys` | `[]` | Envelope keys a client attaches to every call, dropped rather than rejected — beside `tool_name`/`arguments` on a facade, and at the top level on any tool |
 | `tools_list_cache` | `nil` | `:memory`, `:redis`, or any object responding to `get`/`set` — see [Caching `tools/list`](#caching-toolslist) |
 | `tools_list_cache_ttl` | `3600` | Per-entry TTL in seconds |
 | `tools_list_cache_redis` | `nil` | Explicit Redis client for the `:redis` store |

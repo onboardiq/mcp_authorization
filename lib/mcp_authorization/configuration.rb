@@ -100,6 +100,25 @@ module McpAuthorization
     #: bool
     attr_accessor :strict_schema
 
+    # When true (the default), a +tools/call+ whose params carry a top-level
+    # key outside the caller's compiled input schema is rejected with
+    # +McpAuthorization::UnknownInputKeysError+ instead of having the key
+    # silently dropped. A field gated by a predicate this caller fails is
+    # outside that schema and is rejected the same way — the caller's
+    # schema is the contract. Set to false to restore the pre-0.9
+    # drop-everything behavior.
+    #: bool
+    attr_accessor :reject_unknown_input_keys
+
+    # Keys a host's client attaches to every call as an envelope — a UI
+    # annotation, not a tool parameter — which are dropped rather than
+    # rejected. Empty by default. Applied wherever a key is checked against a
+    # schema: beside +tool_name+ and +arguments+ on a facade call, and at the
+    # top level of any tool's params, so the same envelope is exempt on a
+    # facade and on a flat domain alike.
+    #: Array[String]
+    attr_accessor :ignored_input_keys
+
     # Cache for the +tools/list+ response. Opt-in; defaults to no caching.
     # Accepts:
     #   nil / false  — no caching (default)
@@ -179,6 +198,8 @@ module McpAuthorization
       @context_builder = nil
       @cli_context_builder = nil
       @strict_schema = false
+      @reject_unknown_input_keys = true
+      @ignored_input_keys = []
       @tools_list_cache = nil
       @tools_list_cache_ttl = 3600
       @tools_list_cache_redis = nil

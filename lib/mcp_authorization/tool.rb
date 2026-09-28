@@ -215,9 +215,10 @@ module McpAuthorization
       # Create an anonymous MCP::Tool subclass with this user's schemas baked in.
       #
       # The materialized +call+ enforces the compiled schema at runtime:
-      # input params are stripped of unknown or permission-gated fields
-      # before reaching the handler, and the handler's return value is
-      # projected onto the user's output schema before being serialized.
+      # a top-level param outside the caller's input schema is rejected
+      # in-band (+UnknownInputKeysError+ → +isError: true+) before the
+      # handler runs, and the handler's return value is projected onto the
+      # user's output schema before being serialized.
       #: (untyped) -> Class?
       def materialize_for(server_context)
         defn = to_mcp_definition(server_context: server_context)
@@ -236,9 +237,16 @@ module McpAuthorization
 
           define_singleton_method(:call) do |server_context: nil, **params|
             effective_ctx = server_context || ctx
-            filtered_params = McpAuthorization::RbsSchemaCompiler.filter_input(
-              handler, params, server_context: effective_ctx
-            )
+            begin
+              filtered_params = McpAuthorization::RbsSchemaCompiler.filter_input(
+                handler, params, server_context: effective_ctx
+              )
+            rescue McpAuthorization::UnknownInputKeysError => e
+              # In-band tool error (isError: true), not a JSON-RPC failure, so the
+              # model reads the guidance. tool_name, not defn[:name]: a host may
+              # rename the materialized class, and the caller knows the new name.
+              next MCP::Tool::Response.new([{ type: "text", text: "#{tool_name}: #{e.message}" }], error: true)
+            end
             raw = handler.new(server_context: effective_ctx).call(**symbolize.call(filtered_params))
             result = McpAuthorization::RbsSchemaCompiler.filter_output(
               handler, raw, server_context: effective_ctx

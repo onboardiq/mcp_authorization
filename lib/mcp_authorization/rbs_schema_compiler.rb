@@ -42,6 +42,31 @@ require "rbs/parser_aux"
 require_relative "diagnostics"
 
 module McpAuthorization
+  # Raised by +RbsSchemaCompiler.filter_input+ when the caller sent a
+  # top-level param outside its compiled input schema. +unknown_keys+ are
+  # the offending names; +accepted_keys+ are the names in the caller's
+  # schema. The message is written for an LLM that will read it as a tool
+  # result: it must not suggest re-running without the parameter, because
+  # for a filter that means acting on an unfiltered result.
+  class UnknownInputKeysError < ArgumentError
+    attr_reader :unknown_keys, :accepted_keys
+
+    #: (Array[String], Array[String]) -> void
+    def initialize(unknown_keys, accepted_keys)
+      @unknown_keys = unknown_keys
+      @accepted_keys = accepted_keys
+      accepted = accepted_keys.empty? ? "none" : accepted_keys.join(", ")
+      super(
+        "Unknown parameter#{"s" if unknown_keys.size > 1}: #{unknown_keys.join(", ")}. " \
+        "Nothing was executed. Accepted parameters: #{accepted}. " \
+        "If your task depends on a rejected parameter (for example filtering by it), " \
+        "do not re-run this call without it: the result would be unfiltered. " \
+        "Do not substitute another parameter to approximate it. " \
+        "Use a tool that supports it, or tell the user it is not possible."
+      )
+    end
+  end
+
   # Compiles RBS-style type annotations in Ruby source files into JSON Schema,
   # with per-request filtering based on +@requires+ permission tags.
   #
@@ -127,10 +152,16 @@ module McpAuthorization
 
       # Filter incoming params against the user's compiled input schema.
       #
-      # Any key that is not in the schema for this user is dropped — including
-      # +@requires+-gated fields the user lacks permission for, and any
-      # unknown fields not declared in the schema. This is the runtime
-      # enforcement counterpart to the input-shaping that +compile_input+ did.
+      # This is the runtime enforcement counterpart to the input-shaping
+      # that +compile_input+ did. The caller's schema is the contract: a
+      # top-level key outside it — whether the tool never declared it or
+      # declared it behind a predicate this caller fails — does not exist
+      # from the caller's point of view. Such a key used to be dropped
+      # silently, which returned a successful-looking result that ignored
+      # part of the request (an invented filter, a gated flag). By default
+      # it now raises +UnknownInputKeysError+; see
+      # +config.reject_unknown_input_keys+. Keys nested inside a declared
+      # object param are still projected silently.
       #
       # @param handler_class [Class]
       # @param params [Hash] Params as received from the MCP client.
@@ -141,7 +172,25 @@ module McpAuthorization
         return params unless params.is_a?(Hash)
         schema = compile_input_for_filter(handler_class, server_context: server_context)
         return params unless schema
+        reject_unknown_input_keys!(params, schema) if McpAuthorization.config.reject_unknown_input_keys
         project_against_schema(params, schema, defs_from(schema))
+      end
+
+      # Raise when +params+ carries a top-level key outside +schema+'s
+      # properties. Both the unknown and the accepted names come from the
+      # caller's own schema, so the message reveals nothing +tools/list+ did
+      # not already show this caller. A host's envelope key named in
+      # +config.ignored_input_keys+ is dropped here as it is on a facade: a
+      # client that annotates every call reaches a flat domain directly, where
+      # there is no facade to exempt it.
+      #: (Hash[untyped, untyped], Hash[Symbol, untyped]) -> void
+      def reject_unknown_input_keys!(params, schema)
+        accepted = (schema[:properties] || {}).keys.map(&:to_s)
+        ignored = McpAuthorization.config.ignored_input_keys.map(&:to_s)
+        unknown = params.keys.map(&:to_s) - accepted - ignored
+        return if unknown.empty?
+
+        raise UnknownInputKeysError.new(unknown, accepted.sort)
       end
 
       # Filter the handler's return value against the user's compiled output
