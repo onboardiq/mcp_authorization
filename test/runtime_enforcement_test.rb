@@ -231,6 +231,37 @@ class RuntimeEnforcementTest < Minitest::Test
     assert_equal ["limit"], err.unknown_keys
   end
 
+  # A client that annotates every call with an envelope key reaches a flat
+  # domain directly, where there is no facade to exempt it, so the exemption
+  # has to live here too.
+  def test_filter_input_drops_an_ignored_envelope_key_on_the_flat_path
+    handler = setup_fixture
+    McpAuthorization.config.ignored_input_keys = %w[uiMeta]
+
+    filtered = C.filter_input(handler, { id: "x", uiMeta: { label: "Looking" } }, server_context: StubContext.new([:admin]))
+    assert_equal({ id: "x" }, filtered)
+
+    err = assert_raises(McpAuthorization::UnknownInputKeysError) do
+      C.filter_input(handler, { id: "x", uiMeta: {}, limit: 5 }, server_context: StubContext.new([:admin]))
+    end
+    assert_equal ["limit"], err.unknown_keys, "only the envelope key is exempt"
+  ensure
+    McpAuthorization.config.ignored_input_keys = []
+  end
+
+  def test_an_ignored_key_never_exempts_a_gated_field
+    handler = setup_fixture
+    McpAuthorization.config.ignored_input_keys = %w[force]
+
+    # `force` is @requires(:admin). Naming it ignored must not smuggle it past
+    # the gate: it is dropped, exactly as it was before 0.9, never applied.
+    filtered = C.filter_input(handler, { id: "x", force: true }, server_context: StubContext.new([]))
+    refute filtered.key?(:force)
+    refute filtered.key?("force")
+  ensure
+    McpAuthorization.config.ignored_input_keys = []
+  end
+
   def test_filter_input_drops_unknown_and_gated_keys_when_rejection_disabled
     handler = setup_fixture
     McpAuthorization.config.reject_unknown_input_keys = false

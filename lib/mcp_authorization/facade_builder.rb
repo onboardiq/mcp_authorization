@@ -275,12 +275,12 @@ module McpAuthorization
       # gap filter_input closes for the target tool. The guidance differs from
       # the target's: a flattened parameter is supported, it is just in the
       # wrong place, so the caller is told to nest it rather than to give up.
-      # +config.facade_ignored_keys+ names host envelope keys to drop instead.
+      # +config.ignored_input_keys+ names host envelope keys to drop instead.
       #: (Hash[Symbol, untyped]) -> void
       def reject_unknown_facade_keys!(params)
         return unless McpAuthorization.config.reject_unknown_input_keys
 
-        ignored = McpAuthorization.config.facade_ignored_keys.map(&:to_s)
+        ignored = McpAuthorization.config.ignored_input_keys.map(&:to_s)
         unknown = params.keys.map(&:to_s) - FACADE_KEYS - ignored
         return if unknown.empty?
 

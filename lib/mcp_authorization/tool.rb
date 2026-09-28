@@ -242,9 +242,10 @@ module McpAuthorization
                 handler, params, server_context: effective_ctx
               )
             rescue McpAuthorization::UnknownInputKeysError => e
-              # In-band tool error (isError: true), not a JSON-RPC failure: the
-              # model reads the message and can retry with accepted params.
-              next MCP::Tool::Response.new([{ type: "text", text: "#{defn[:name]}: #{e.message}" }], error: true)
+              # In-band tool error (isError: true), not a JSON-RPC failure, so the
+              # model reads the guidance. tool_name, not defn[:name]: a host may
+              # rename the materialized class, and the caller knows the new name.
+              next MCP::Tool::Response.new([{ type: "text", text: "#{tool_name}: #{e.message}" }], error: true)
             end
             raw = handler.new(server_context: effective_ctx).call(**symbolize.call(filtered_params))
             result = McpAuthorization::RbsSchemaCompiler.filter_output(

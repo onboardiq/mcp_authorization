@@ -765,13 +765,13 @@ class FacadeTest < Minitest::Test
     assert_equal FB::FACADE_KEYS.sort, required.sort
   end
 
-  def test_facade_ignored_keys_are_dropped_instead_of_rejected
+  def test_ignored_input_keys_are_dropped_instead_of_rejected
     define_standard_tools
     facet!
     ctx = full_ctx
     facade = FB.facade_for(domain: domain, name: "widgets_tools", server_context: ctx)
 
-    McpAuthorization.config.facade_ignored_keys = %w[uiMeta]
+    McpAuthorization.config.ignored_input_keys = %w[uiMeta]
     response = facade.call(
       server_context: ctx,
       tool_name: "list_widgets_#{domain}",
@@ -786,7 +786,7 @@ class FacadeTest < Minitest::Test
     )
     assert other.error?, "only the declared keys are exempt"
   ensure
-    McpAuthorization.config.facade_ignored_keys = []
+    McpAuthorization.config.ignored_input_keys = []
   end
 
   def test_dispatch_ignores_keys_beside_tool_name_and_arguments_when_opted_out

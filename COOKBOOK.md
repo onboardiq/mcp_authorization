@@ -166,7 +166,7 @@ end
 | operator (no `backward_routing`) | `applicant_id`, `workflow_id` |
 | manager (has `backward_routing`) | `applicant_id`, `workflow_id`, `stage_id` |
 
-This is enforced, not cosmetic. If an operator's client sends `stage_id` in the raw JSON-RPC anyway, the gem **strips it before `#call` runs** — the handler sees `stage_id: nil`. You don't have to re-check `can?` inside the method.
+This is enforced, not cosmetic. If an operator's client sends `stage_id` in the raw JSON-RPC anyway, the gem **rejects the call before `#call` runs** — the handler never sees it, and the caller gets an in-band error naming the parameters it may send. You don't have to re-check `can?` inside the method. (A gated field *nested* inside a declared object is stripped rather than rejected; the rejection covers the top level.)
 
 > `?stage_id` (leading `?`) = optional param. `String?` (trailing `?`) = nilable type. Together: optional *and* may be nil.
 

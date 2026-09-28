@@ -179,11 +179,15 @@ module McpAuthorization
       # Raise when +params+ carries a top-level key outside +schema+'s
       # properties. Both the unknown and the accepted names come from the
       # caller's own schema, so the message reveals nothing +tools/list+ did
-      # not already show this caller.
+      # not already show this caller. A host's envelope key named in
+      # +config.ignored_input_keys+ is dropped here as it is on a facade: a
+      # client that annotates every call reaches a flat domain directly, where
+      # there is no facade to exempt it.
       #: (Hash[untyped, untyped], Hash[Symbol, untyped]) -> void
       def reject_unknown_input_keys!(params, schema)
         accepted = (schema[:properties] || {}).keys.map(&:to_s)
-        unknown = params.keys.map(&:to_s) - accepted
+        ignored = McpAuthorization.config.ignored_input_keys.map(&:to_s)
+        unknown = params.keys.map(&:to_s) - accepted - ignored
         return if unknown.empty?
 
         raise UnknownInputKeysError.new(unknown, accepted.sort)
