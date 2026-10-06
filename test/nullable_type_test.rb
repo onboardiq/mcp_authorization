@@ -55,6 +55,27 @@ class NullableTypeTest < Minitest::Test
     assert_equal({ owner: nil }, C.send(:project_against_schema, { owner: nil }, schema, {}))
   end
 
+  # The non-null branch of a nil-able union is a oneOf with no type of its
+  # own; projection must still pick a member rather than pass the value through.
+  def test_projection_still_drops_undeclared_keys_inside_a_nullable_union
+    ["{ id: String } | { name: String } | nil", "({ id: String } | { name: String })?"].each do |type|
+      schema = record("{ owner: #{type} }")
+
+      assert_equal({ owner: { id: "u1" } }, C.send(:project_against_schema, { owner: { id: "u1", secret: "x" } }, schema, {}), type)
+      assert_equal({ owner: nil }, C.send(:project_against_schema, { owner: nil }, schema, {}), type)
+    end
+  end
+
+  def test_closed_applies_to_the_object_inside_a_nullable_wrapper
+    type_map = { "meta_t" => { type: "object", properties: { id: { type: "string" } } } }
+    schema = record("{ meta: meta_t? @closed() }", type_map)
+
+    assert_valid schema, { meta: { id: "a" } }
+    assert_valid schema, { meta: nil }
+    refute_valid schema, { meta: { id: "a", extra: 1 } }
+    refute type_map["meta_t"].key?(:additionalProperties), "@closed must not mutate the shared type_map entry"
+  end
+
   # The facade parses a JSON-string argument only when the target param is an
   # object or array; a nil-able object param must still read as one.
   def test_primary_type_sees_through_the_null_branch

@@ -364,6 +364,12 @@ module McpAuthorization
         schema = resolve_ref(schema, defs)
         return value unless schema.is_a?(Hash)
 
+        # A nil-able wrapper projects against its non-null branch, which may
+        # itself be a union with no type of its own that best_variant_for
+        # could score.
+        inner = non_null_variant(schema)
+        return (value.nil? ? value : project_against_schema(value, inner, defs)) if inner
+
         variants = schema[:oneOf] || schema[:anyOf]
         if variants.is_a?(Array) && !variants.empty?
           # Flatten so intersection (allOf) members project like the object
@@ -919,7 +925,17 @@ module McpAuthorization
         schema[:writeOnly] = true if tags[:write_only]
 
         # Niche constraints
-        schema[:additionalProperties] = false if tags[:closed]
+        if tags[:closed]
+          # On a nil-able wrapper the keyword belongs on the object branch:
+          # beside anyOf there are no properties, so every key would be
+          # additional. Copy the branch, which may be a shared type_map entry.
+          inner = non_null_variant(schema)
+          if inner
+            schema[:anyOf] = [inner.merge(additionalProperties: false), NULL_SCHEMA.dup]
+          else
+            schema[:additionalProperties] = false
+          end
+        end
         schema[:contentMediaType] = tags[:media_type] if tags[:media_type]
         schema[:contentEncoding] = tags[:encoding] if tags[:encoding]
 
@@ -2022,6 +2038,16 @@ module McpAuthorization
         return schema if variants.is_a?(Array) && variants.include?(NULL_SCHEMA)
 
         { anyOf: [schema, NULL_SCHEMA.dup] }
+      end
+
+      # The non-null branch of an +anyOf+ wrapper +nullable+ produced, or nil
+      # when +schema+ is not one.
+      #: (Hash[Symbol, untyped]) -> Hash[Symbol, untyped]?
+      def non_null_variant(schema)
+        variants = schema[:anyOf]
+        return nil unless variants.is_a?(Array) && variants.size == 2 && variants.include?(NULL_SCHEMA)
+
+        variants.find { |v| v != NULL_SCHEMA }
       end
 
       # The non-null JSON type a schema describes, or nil. Looks through the

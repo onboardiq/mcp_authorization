@@ -17,7 +17,8 @@ release.
 
 ### Unchanged
 - **Optional keys are a separate axis.** `?key: T` still only removes `key` from `required`; a present `null` is still rejected. `?key: T?` gets both. A record field `key: T?` stays required. A `#:` call param typed `T?` is still left out of `required`, as before.
-- **Projection is unchanged.** The `anyOf` wrapper keeps `type: "object"` on the inner branch, so `filter_output` and `filter_input` still drop undeclared and gated keys inside a nil-able object, and a `null` passes through.
+- **Projection is unchanged.** A nil-able wrapper projects against its non-null branch, so `filter_output` and `filter_input` still drop undeclared and gated keys inside a nil-able object or a nil-able union of records (`(A | B)?`, `A | B | nil`), and a `null` passes through.
+- **`@closed()` on a nil-able object closes the object.** `additionalProperties: false` goes on a copy of the object branch, not beside the `anyOf`, where it would reject every key.
 
 ### Migration notes
 - **Input schemas now accept `null` for `T?` params.** A host whose MCP server validates tool-call arguments (the MCP gem's `validate_tool_call_arguments`, on by default) rejected `null` for these params before. Now a `null` reaches the handler. Read the handlers for `params.fetch(:key, default)` and `params.key?(:key)` on a `T?` param before upgrading. An explicit `null` returns `nil` from `fetch` instead of the default, and `key?` reads it as a value that was sent. If `null` is not a meaningful value for a param, declare it `?key: T`.
