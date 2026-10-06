@@ -6,24 +6,29 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.10.0]
 
-Nil-able RBS types compile to schemas that accept `null`. Output schemas
-stop rejecting the nulls their own contracts declare, and input schemas
-start accepting `null` for `T?` params, which is why this is a minor
-release.
+Nil-able RBS types compile to schemas that accept `null` in tool output.
+Input keeps 0.9's semantics unless a field opts in with the new
+`@nullable()` tag. This is a minor release because the tag is new and
+output schemas change shape for nil-able fields.
 
 ### Fixed
-- **`T?` compiles to a nullable schema.** The compiler dropped the `?`, so `note: String?` became `{type: "string"}` and a handler that returned `note: nil`, as its contract allowed, failed output validation. A scalar now compiles to a type array, `{type: ["string", "null"]}`, which keeps keywords such as `minLength` and `format` on the same schema. JSON Schema applies them to strings only, so `null` still passes. Every other schema is wrapped as `{anyOf: [<schema>, {type: "null"}]}`, including objects, arrays, `$ref`s, records, `Hash[...]`, and `const`/`enum` schemas.
-- **`T | nil` compiles the same as `T?`.** `nil` used to compile to the empty schema, so `String | nil` became `oneOf: [{type: "string"}, {}]`. A string matched both members, and `oneOf` rejected it. Nil members (`nil`, `NilClass`) are now stripped from the union and the rest is widened.
+- **`T?` in output compiles to a nullable schema.** The compiler dropped the `?`, so `note: String?` became `{type: "string"}`. A handler that returned `note: nil`, as its contract allowed, then failed output validation. A scalar now compiles to a type array, `{type: ["string", "null"]}`, which keeps keywords such as `minLength` and `format` on the same schema. JSON Schema applies them to strings only, so `null` still passes. Every other schema is wrapped as `{anyOf: [<schema>, {type: "null"}]}`, including objects, arrays, `$ref`s, records, `Hash[...]`, and `const`/`enum` schemas.
+- **`T | nil` compiles the same as `T?`.** `nil` used to compile to the empty schema, so `String | nil` became `oneOf: [{type: "string"}, {}]`. A string matched both members, and `oneOf` rejected it. Nil members (`nil`, `NilClass`) are now stripped from the union and the rest is widened. On input it narrows to `T` (see below), so a valid `T` is accepted there too.
+
+### Added
+- **`@nullable()` lets an input field accept `null`.** On input, `T?` and `T | nil` compile to `T`, as `T?` did in 0.9: the key may be omitted, and `null` is rejected. For an optional param, an explicit `null` and an omitted key are different requests. A handler that reads `params.fetch(:key, default)` or writes the value to a NOT NULL column handles only the omission. Tag a field `@nullable()` when `null` is a request the handler serves, such as clearing a stored value. The tag works on `#:` call params, `# @rbs type` records, and fields inside shared `.rbs` types, so one shared type can be nullable in one tool's output and strict in another tool's input.
+- **`@nullable()` on a type that is not nil-able raises `ArgumentError` at compile time.** `@nullable()` on `String` or `untyped` is a mistake: either the type is missing its `?`, or the tag is unneeded. Silently ignoring it would hide which one. The tag has no effect on output, which is already nullable.
 
 ### Unchanged
-- **Optional keys are a separate axis.** `?key: T` still only removes `key` from `required`; a present `null` is still rejected. `?key: T?` gets both. A record field `key: T?` stays required. A `#:` call param typed `T?` is still left out of `required`, as before.
-- **Projection is unchanged.** A nil-able wrapper projects against its non-null branch, so `filter_output` and `filter_input` still drop undeclared and gated keys inside a nil-able object or a nil-able union of records (`(A | B)?`, `A | B | nil`), and a `null` passes through.
+- **Input schemas.** Without the tag, an input field compiles as it did in 0.9. `?key: T` only removes `key` from `required`. A `#:` call param typed `T?` is still left out of `required`. A record field `key: T?` stays required.
+- **Projection.** A nil-able wrapper projects against its non-null branch. `filter_output`, and `filter_input` for a tagged field, still drop undeclared and gated keys inside a nil-able object or a nil-able union of records (`(A | B)?`, `A | B | nil`), and a `null` passes through.
 - **`@closed()` on a nil-able object closes the object.** `additionalProperties: false` goes on a copy of the object branch, not beside the `anyOf`, where it would reject every key.
 
 ### Migration notes
-- **Input schemas now accept `null` for `T?` params.** A host whose MCP server validates tool-call arguments (the MCP gem's `validate_tool_call_arguments`, on by default) rejected `null` for these params before. Now a `null` reaches the handler. Read the handlers for `params.fetch(:key, default)` and `params.key?(:key)` on a `T?` param before upgrading. An explicit `null` returns `nil` from `fetch` instead of the default, and `key?` reads it as a value that was sent. If `null` is not a meaningful value for a param, declare it `?key: T`.
-- Code that reads a compiled schema's `type` directly sees an array, or no `type` at the top of an `anyOf` wrapper, for nil-able fields. Inside the gem, `apply_tags` (`@min`/`@max`) and the facade's JSON-string coercion of object and array arguments look through both forms.
+- Code that reads a compiled output schema's `type` directly sees an array for a nil-able scalar. For a nil-able object, array or `$ref`, it sees no `type` at the top of an `anyOf` wrapper. Inside the gem, `apply_tags` (`@min`/`@max`) and the facade's JSON-string coercion of object and array arguments look through both forms.
+- A host that wants an input field to accept `null` adds `@nullable()` to that field. Check the handler first: `null` should reach a code path that handles it, not a `fetch` default or a NOT NULL column.
 
+## [0.9.0]
 
 Top-level params outside the caller's input schema are rejected instead of
 silently dropped. Behavior change on by default — opt out with

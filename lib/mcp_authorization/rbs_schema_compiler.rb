@@ -114,6 +114,11 @@ module McpAuthorization
     # The branch +nullable+ adds to an +anyOf+.
     NULL_SCHEMA = { type: "null" }.freeze
 
+    # Internal key +apply_tags+ sets on a field tagged +@nullable()+. It
+    # survives only until +finalize_for+, which strips it from every
+    # compiled schema; it never reaches a caller.
+    NULLABLE_INPUT_KEY = :"x-mcp-nullable-input"
+
     class << self
       # ---------------------------------------------------------------
       # Public API
@@ -139,7 +144,7 @@ module McpAuthorization
           )
         end
 
-        schema = with_ref_injection(schema, cached[:type_map])
+        schema = finalize_for(:input, with_ref_injection(schema, cached[:type_map]))
         McpAuthorization.config.strict_schema ? strict_sanitize(schema) : schema
       end
 
@@ -152,7 +157,7 @@ module McpAuthorization
 
         if cached[:raw_output]&.dig(:kind) == :union
           schema = compile_tagged_union(cached[:raw_output][:body], cached[:type_map], server_context, rctx: build_rctx(server_context, cached))
-          schema = with_ref_injection(schema, cached[:type_map])
+          schema = finalize_for(:output, with_ref_injection(schema, cached[:type_map]))
           return McpAuthorization.config.strict_schema ? strict_sanitize(schema) : schema
         end
       end
@@ -312,7 +317,7 @@ module McpAuthorization
           )
         end
 
-        with_ref_injection(schema, cached[:type_map])
+        finalize_for(:input, with_ref_injection(schema, cached[:type_map]))
       end
 
       # Like +compile_output+ but skips +strict_sanitize+. Returns nil when
@@ -323,7 +328,7 @@ module McpAuthorization
         return nil unless cached[:raw_output]&.dig(:kind) == :union
 
         schema = compile_tagged_union(cached[:raw_output][:body], cached[:type_map], server_context, rctx: build_rctx(server_context, cached))
-        with_ref_injection(schema, cached[:type_map])
+        finalize_for(:output, with_ref_injection(schema, cached[:type_map]))
       end
 
       # Extract the +$defs+ table from a compiled schema for +$ref+ resolution.
@@ -600,6 +605,8 @@ module McpAuthorization
             tags[:unique] = true
           when "closed", "strict"
             tags[:closed] = true
+          when "nullable"
+            tags[:nullable] = true
           when "media_type"
             tags[:media_type] = tag_value
           when "encoding"
@@ -923,6 +930,14 @@ module McpAuthorization
         schema[:deprecated] = true if tags[:deprecated]
         schema[:readOnly] = true if tags[:read_only]
         schema[:writeOnly] = true if tags[:write_only]
+
+        if tags[:nullable]
+          unless null_admitting?(schema)
+            raise ArgumentError,
+              "@nullable() needs a nil-able type (T? or T | nil); got #{schema.inspect}"
+          end
+          schema[NULLABLE_INPUT_KEY] = true
+        end
 
         # Niche constraints
         if tags[:closed]
@@ -2048,6 +2063,60 @@ module McpAuthorization
         return nil unless variants.is_a?(Array) && variants.size == 2 && variants.include?(NULL_SCHEMA)
 
         variants.find { |v| v != NULL_SCHEMA }
+      end
+
+      # True when +schema+ is one of the forms +nullable+ produces.
+      #: (Hash[Symbol, untyped]) -> bool
+      def null_admitting?(schema)
+        type = schema[:type]
+        return true if type.is_a?(Array) && type.include?("null")
+
+        !non_null_variant(schema).nil?
+      end
+
+      # Settle nullability for one direction of a compiled schema.
+      #
+      # Output keeps every +T?+ / +T | nil+ nullable: a handler may return
+      # nil where its contract says so. Input narrows each of them back to
+      # +T+, unless the field is tagged +@nullable()+. For an optional
+      # param an explicit +null+ and an omitted key are different requests,
+      # and a handler that reads +params.fetch(:key, default)+ or writes
+      # the value to a NOT NULL column handles only the second. A shared
+      # type can therefore be nullable in a tool's output and strict in
+      # another tool's input. Either way the internal tag marker is
+      # removed. Returns a new schema; the cached type map is not touched.
+      #: (Symbol, untyped) -> untyped
+      def finalize_for(direction, schema)
+        case schema
+        when Hash
+          keep = schema[NULLABLE_INPUT_KEY]
+          result = schema.each_with_object({}) do |(key, value), out|
+            next if key == NULLABLE_INPUT_KEY
+            out[key] = finalize_for(direction, value)
+          end
+          direction == :input && !keep ? non_nullable(result) : result
+        when Array
+          schema.map { |item| finalize_for(direction, item) }
+        else
+          schema
+        end
+      end
+
+      # Undo +nullable+ on one schema node: drop "null" from a type array,
+      # or unwrap an +anyOf: [schema, {type: "null"}]+ wrapper, keeping the
+      # wrapper's own keywords (description, examples) on the result.
+      #: (Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
+      def non_nullable(schema)
+        type = schema[:type]
+        if type.is_a?(Array) && type.include?("null")
+          rest = type - ["null"]
+          return schema.merge(type: rest.size == 1 ? rest.first : rest)
+        end
+
+        inner = non_null_variant(schema)
+        return schema unless inner
+
+        inner.merge(schema.reject { |key, _| key == :anyOf })
       end
 
       # The non-null JSON type a schema describes, or nil. Looks through the
