@@ -65,6 +65,9 @@ module McpAuthorization
     def self.visit_rbs_class_instance: (untyped, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
     def self.visit_rbs_literal: (untyped) -> Hash[Symbol, untyped]
     def self.visit_rbs_union: (untyped, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
+    def self.nil_type?: (untyped) -> bool
+    def self.nullable: (Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
+    def self.primary_type: (Hash[Symbol, untyped]?) -> String?
     def self.visit_rbs_record: (untyped, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
     def self.resolve_type: (String, Hash[String, Hash[Symbol, untyped]], ?Hash[Symbol, untyped]?) -> Hash[Symbol, untyped]
     def self.build_input_schema: (Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
