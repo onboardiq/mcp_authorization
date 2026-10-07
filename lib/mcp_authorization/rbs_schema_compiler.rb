@@ -1721,7 +1721,7 @@ module McpAuthorization
             params << {
               name: name,
               type: type,
-              required: !optional && !type.end_with?("?"),
+              required: !optional && !nilable_type?(type),
               tags: tags
             }
           end
@@ -2012,6 +2012,18 @@ module McpAuthorization
         end
 
         { oneOf: types.map { |t| visit_rbs_type(t, type_map, rctx) } }
+      end
+
+      # True when the RBS type +type+ admits nil: +T?+, or a union with a
+      # +nil+ or +NilClass+ member. A call param typed this way may be
+      # omitted, whichever spelling declares it.
+      #: (String) -> bool
+      def nilable_type?(type)
+        node = RBS::Parser.parse_type(type, require_eof: true)
+        node.is_a?(RBS::Types::Optional) ||
+          (node.is_a?(RBS::Types::Union) && node.types.any? { |t| nil_type?(t) })
+      rescue RBS::ParsingError
+        type.end_with?("?")
       end
 
       # True for the RBS spellings of nil: the +nil+ base type and +NilClass+.

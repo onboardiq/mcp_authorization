@@ -725,7 +725,7 @@ def call(applicant_id:, workflow_id:, stage_id: nil, reason: nil)
 
 Prefix a param with `?` to mark it optional. Suffix the type with `?` for nilable types. Both together (`?name: Type?`) means the field is optional and can be nil.
 
-The two markers compile separately. `?name: String` leaves `name` out of `required`, but a value that is present must be a string. `name: String?` keeps `name` required. `String | nil` compiles the same as `String?`.
+The two markers compile separately. `?name: String` leaves `name` out of `required`, but a value that is present must be a string. In a `# @rbs type` record, `name: String?` keeps `name` required; a `#:` call param typed `String?` is optional. `String | nil` compiles the same as `String?` in both places.
 
 Nullability depends on direction. In a tool's output, `String?` accepts `null`: a scalar compiles to `{"type": ["string", "null"]}`, and anything else to `{"anyOf": [<schema>, {"type": "null"}]}`. In a tool's input, `String?` compiles to `{"type": "string"}` and rejects `null`, unless the field is tagged `@nullable()`. Tag a field when `null` is a request its handler serves, such as `?hire_by: String? @nullable() @desc(Pass null to remove the deadline)`. An explicit `null` and an omitted key are different requests, and `@nullable()` on a type without `?` raises `ArgumentError`.
 

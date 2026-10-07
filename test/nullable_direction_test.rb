@@ -47,6 +47,24 @@ class NullableDirectionTest < Minitest::Test
     refute_valid schema, { filter: nil }
   end
 
+  # `#: (key: T | nil)` is the union spelling of `key: T?`; it must leave the
+  # key optional the same way, rather than demand a value the caller lacks.
+  def test_union_with_nil_call_param_is_optional_like_the_question_mark_form
+    handler = load_handler(<<~SRC)
+      class <%= klass %>
+        #: (a: String?, b: String | nil, c: String | nil @nullable()) -> untyped
+        def call(**); end
+      end
+    SRC
+    schema = C.compile_input(handler, server_context: ctx)
+
+    assert_nil schema[:required]
+    assert_valid schema, {}
+    assert_valid schema, { b: "x" }
+    refute_valid schema, { b: nil }
+    assert_valid schema, { c: nil }
+  end
+
   def test_nullable_tag_admits_null_on_that_input_param_only
     handler = load_handler(<<~SRC)
       class <%= klass %>
