@@ -331,7 +331,7 @@ module McpAuthorization
         parsed.each_with_object({}) do |(key, value), out|
           sym = key.to_sym
           expected = properties[sym] || properties[key.to_s] || {}
-          expected_type = expected[:type] || expected["type"]
+          expected_type = RbsSchemaCompiler.send(:primary_type, expected)
           if value.is_a?(String) && %w[object array].include?(expected_type.to_s)
             value = parse_json_blob(value, sym)
           end

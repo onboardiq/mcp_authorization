@@ -38,8 +38,8 @@ class TypeResolutionTest < Minitest::Test
     assert_equal expected, schema("Array[Integer]")
   end
 
-  def test_optional_strips_question_mark
-    assert_equal({ type: "string" }, schema("String?"))
+  def test_optional_admits_null
+    assert_equal({ type: %w[string null] }, schema("String?"))
   end
 
   def test_inline_record

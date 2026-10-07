@@ -107,6 +107,18 @@ module McpAuthorization
   # - +@desc(text)+, +@title(text)+ — JSON Schema annotation keywords
   #
   class RbsSchemaCompiler
+    # Scalar JSON types +nullable+ widens with a type array rather than an
+    # +anyOf+ wrapper.
+    NULLABLE_SCALAR_TYPES = %w[string integer number boolean].freeze
+
+    # The branch +nullable+ adds to an +anyOf+.
+    NULL_SCHEMA = { type: "null" }.freeze
+
+    # Internal key +apply_tags+ sets on a field tagged +@nullable()+. It
+    # survives only until +finalize_for+, which strips it from every
+    # compiled schema; it never reaches a caller.
+    NULLABLE_INPUT_KEY = :"x-mcp-nullable-input"
+
     class << self
       # ---------------------------------------------------------------
       # Public API
@@ -132,7 +144,7 @@ module McpAuthorization
           )
         end
 
-        schema = with_ref_injection(schema, cached[:type_map])
+        schema = finalize_for(:input, with_ref_injection(schema, cached[:type_map]))
         McpAuthorization.config.strict_schema ? strict_sanitize(schema) : schema
       end
 
@@ -145,7 +157,7 @@ module McpAuthorization
 
         if cached[:raw_output]&.dig(:kind) == :union
           schema = compile_tagged_union(cached[:raw_output][:body], cached[:type_map], server_context, rctx: build_rctx(server_context, cached))
-          schema = with_ref_injection(schema, cached[:type_map])
+          schema = finalize_for(:output, with_ref_injection(schema, cached[:type_map]))
           return McpAuthorization.config.strict_schema ? strict_sanitize(schema) : schema
         end
       end
@@ -305,7 +317,7 @@ module McpAuthorization
           )
         end
 
-        with_ref_injection(schema, cached[:type_map])
+        finalize_for(:input, with_ref_injection(schema, cached[:type_map]))
       end
 
       # Like +compile_output+ but skips +strict_sanitize+. Returns nil when
@@ -316,7 +328,7 @@ module McpAuthorization
         return nil unless cached[:raw_output]&.dig(:kind) == :union
 
         schema = compile_tagged_union(cached[:raw_output][:body], cached[:type_map], server_context, rctx: build_rctx(server_context, cached))
-        with_ref_injection(schema, cached[:type_map])
+        finalize_for(:output, with_ref_injection(schema, cached[:type_map]))
       end
 
       # Extract the +$defs+ table from a compiled schema for +$ref+ resolution.
@@ -356,6 +368,12 @@ module McpAuthorization
         return value if schema.nil?
         schema = resolve_ref(schema, defs)
         return value unless schema.is_a?(Hash)
+
+        # A nil-able wrapper projects against its non-null branch, which may
+        # itself be a union with no type of its own that best_variant_for
+        # could score.
+        inner = non_null_variant(schema)
+        return (value.nil? ? value : project_against_schema(value, inner, defs)) if inner
 
         variants = schema[:oneOf] || schema[:anyOf]
         if variants.is_a?(Array) && !variants.empty?
@@ -587,6 +605,8 @@ module McpAuthorization
             tags[:unique] = true
           when "closed", "strict"
             tags[:closed] = true
+          when "nullable"
+            tags[:nullable] = true
           when "media_type"
             tags[:media_type] = tag_value
           when "encoding"
@@ -869,15 +889,16 @@ module McpAuthorization
       #: (Hash[Symbol, untyped], Hash[Symbol, untyped], ?server_context: untyped?) -> Hash[Symbol, untyped]
       def apply_tags(schema, tags, server_context: nil)
         # Type-aware min/max
+        constrained_type = primary_type(schema)
         if tags[:min]
-          case schema[:type]
+          case constrained_type
           when "string" then schema[:minLength] = tags[:min]
           when "integer", "number" then schema[:minimum] = tags[:min]
           when "array" then schema[:minItems] = tags[:min]
           end
         end
         if tags[:max]
-          case schema[:type]
+          case constrained_type
           when "string" then schema[:maxLength] = tags[:max]
           when "integer", "number" then schema[:maximum] = tags[:max]
           when "array" then schema[:maxItems] = tags[:max]
@@ -910,8 +931,26 @@ module McpAuthorization
         schema[:readOnly] = true if tags[:read_only]
         schema[:writeOnly] = true if tags[:write_only]
 
+        if tags[:nullable]
+          unless null_admitting?(schema)
+            raise ArgumentError,
+              "@nullable() needs a nil-able type (T? or T | nil); got #{schema.inspect}"
+          end
+          schema[NULLABLE_INPUT_KEY] = true
+        end
+
         # Niche constraints
-        schema[:additionalProperties] = false if tags[:closed]
+        if tags[:closed]
+          # On a nil-able wrapper the keyword belongs on the object branch:
+          # beside anyOf there are no properties, so every key would be
+          # additional. Copy the branch, which may be a shared type_map entry.
+          inner = non_null_variant(schema)
+          if inner
+            schema[:anyOf] = [inner.merge(additionalProperties: false), NULL_SCHEMA.dup]
+          else
+            schema[:additionalProperties] = false
+          end
+        end
         schema[:contentMediaType] = tags[:media_type] if tags[:media_type]
         schema[:contentEncoding] = tags[:encoding] if tags[:encoding]
 
@@ -1682,7 +1721,7 @@ module McpAuthorization
             params << {
               name: name,
               type: type,
-              required: !optional && !type.end_with?("?"),
+              required: !optional && !nilable_type?(type),
               tags: tags
             }
           end
@@ -1804,9 +1843,9 @@ module McpAuthorization
       # Handles:
       # - Primitives: +String+ → +{type: "string"}+, +Integer+ → +{type: "integer"}+, etc.
       # - Arrays: +Array[String]+ → +{type: "array", items: {type: "string"}}+
-      # - Optionals: +String?+ → +{type: "string"}+ (nullability is handled at the field level)
+      # - Optionals: +String?+ → +{type: ["string", "null"]}+; see +nullable+
       # - Inline records: +{name: String}+ → nested object schema
-      # - Unions: +"a" | "b"+ → string enum; +A | B+ → +oneOf+
+      # - Unions: +"a" | "b"+ → string enum; +A | B+ → +oneOf+; +T | nil+ → same as +T?+
       # - Named types: looked up in +type_map+, falling back to +{type: "string"}+
       #
       # @param rbs_type [String] RBS type expression.
@@ -1860,9 +1899,9 @@ module McpAuthorization
         when RBS::Types::Literal
           visit_rbs_literal(node)
         when RBS::Types::Optional
-          # Optional wraps a type; nullability is handled at field
-          # level (required-set), not in the JSON Schema type itself.
-          visit_rbs_type(node.type, type_map, rctx)
+          # T? admits nil. Whether the key may be omitted is a separate,
+          # field-level question (?key: and the required set).
+          nullable(visit_rbs_type(node.type, type_map, rctx))
         when RBS::Types::Union
           visit_rbs_union(node, type_map, rctx)
         when RBS::Types::Intersection
@@ -1945,6 +1984,20 @@ module McpAuthorization
       def visit_rbs_union(node, type_map, rctx = nil)
         types = node.types
 
+        # T | nil means T? — strip the nil members and widen the rest.
+        # Compiling nil as its own member would emit oneOf [T, {}]; the
+        # empty schema matches every value, so a valid T matched two
+        # members and oneOf rejected it.
+        nils, others = types.partition { |t| nil_type?(t) }
+        if nils.any? && others.any?
+          inner = if others.size == 1
+            visit_rbs_type(others.first, type_map, rctx)
+          else
+            visit_rbs_union(RBS::Types::Union.new(types: others, location: nil), type_map, rctx)
+          end
+          return nullable(inner)
+        end
+
         # All string literals → enum.
         if types.all? { |t| t.is_a?(RBS::Types::Literal) && t.literal.is_a?(String) }
           return { type: "string", enum: types.map { |t| t.literal.to_s } }
@@ -1959,6 +2012,141 @@ module McpAuthorization
         end
 
         { oneOf: types.map { |t| visit_rbs_type(t, type_map, rctx) } }
+      end
+
+      # True when the RBS type +type+ admits nil: +T?+, or a union with a
+      # +nil+ or +NilClass+ member. A call param typed this way may be
+      # omitted, whichever spelling declares it.
+      #: (String) -> bool
+      def nilable_type?(type)
+        node = RBS::Parser.parse_type(type, require_eof: true)
+        node.is_a?(RBS::Types::Optional) ||
+          (node.is_a?(RBS::Types::Union) && node.types.any? { |t| nil_type?(t) })
+      rescue RBS::ParsingError
+        type.end_with?("?")
+      end
+
+      # True for the RBS spellings of nil: the +nil+ base type and +NilClass+.
+      #: (untyped) -> bool
+      def nil_type?(node)
+        node.is_a?(RBS::Types::Bases::Nil) ||
+          (node.is_a?(RBS::Types::ClassInstance) && node.name.to_s.sub(/\A::/, "") == "NilClass")
+      end
+
+      # Widen +schema+ to also accept +null+.
+      #
+      # A plain scalar (+string+, +integer+, +number+, +boolean+) takes the
+      # type-array form, +{type: ["string", "null"]}+, so the keywords
+      # +apply_tags+ adds next to it (+minLength+, +format+, +pattern+, ...)
+      # stay on the same schema. They constrain strings only, so a null
+      # still passes.
+      #
+      # Everything else is wrapped: +{anyOf: [schema, {type: "null"}]}+.
+      # Objects and arrays keep +type: "object"+ / +type: "array"+ inside
+      # the wrapper, which +project_against_schema+ and +best_variant_for+
+      # depend on to keep dropping undeclared and gated keys. A +const+ or
+      # +enum+ schema is wrapped too, since its value list would otherwise
+      # reject null. The empty schema already accepts null and is returned
+      # unchanged.
+      #: (Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
+      def nullable(schema)
+        return schema if schema.empty?
+
+        type = schema[:type]
+        if type.is_a?(Array)
+          return type.include?("null") ? schema : schema.merge(type: type + ["null"])
+        end
+
+        if NULLABLE_SCALAR_TYPES.include?(type) && !schema.key?(:const) && !schema.key?(:enum)
+          return schema.merge(type: [type, "null"])
+        end
+
+        variants = schema[:anyOf]
+        return schema if variants.is_a?(Array) && variants.include?(NULL_SCHEMA)
+
+        { anyOf: [schema, NULL_SCHEMA.dup] }
+      end
+
+      # The non-null branch of an +anyOf+ wrapper +nullable+ produced, or nil
+      # when +schema+ is not one.
+      #: (Hash[Symbol, untyped]) -> Hash[Symbol, untyped]?
+      def non_null_variant(schema)
+        variants = schema[:anyOf]
+        return nil unless variants.is_a?(Array) && variants.size == 2 && variants.include?(NULL_SCHEMA)
+
+        variants.find { |v| v != NULL_SCHEMA }
+      end
+
+      # True when +schema+ is one of the forms +nullable+ produces.
+      #: (Hash[Symbol, untyped]) -> bool
+      def null_admitting?(schema)
+        type = schema[:type]
+        return true if type.is_a?(Array) && type.include?("null")
+
+        !non_null_variant(schema).nil?
+      end
+
+      # Settle nullability for one direction of a compiled schema.
+      #
+      # Output keeps every +T?+ / +T | nil+ nullable: a handler may return
+      # nil where its contract says so. Input narrows each of them back to
+      # +T+, unless the field is tagged +@nullable()+. For an optional
+      # param an explicit +null+ and an omitted key are different requests,
+      # and a handler that reads +params.fetch(:key, default)+ or writes
+      # the value to a NOT NULL column handles only the second. A shared
+      # type can therefore be nullable in a tool's output and strict in
+      # another tool's input. Either way the internal tag marker is
+      # removed. Returns a new schema; the cached type map is not touched.
+      #: (Symbol, untyped) -> untyped
+      def finalize_for(direction, schema)
+        case schema
+        when Hash
+          keep = schema[NULLABLE_INPUT_KEY]
+          result = schema.each_with_object({}) do |(key, value), out|
+            next if key == NULLABLE_INPUT_KEY
+            out[key] = finalize_for(direction, value)
+          end
+          direction == :input && !keep ? non_nullable(result) : result
+        when Array
+          schema.map { |item| finalize_for(direction, item) }
+        else
+          schema
+        end
+      end
+
+      # Undo +nullable+ on one schema node: drop "null" from a type array,
+      # or unwrap an +anyOf: [schema, {type: "null"}]+ wrapper, keeping the
+      # wrapper's own keywords (description, examples) on the result.
+      #: (Hash[Symbol, untyped]) -> Hash[Symbol, untyped]
+      def non_nullable(schema)
+        type = schema[:type]
+        if type.is_a?(Array) && type.include?("null")
+          rest = type - ["null"]
+          return schema.merge(type: rest.size == 1 ? rest.first : rest)
+        end
+
+        inner = non_null_variant(schema)
+        return schema unless inner
+
+        inner.merge(schema.reject { |key, _| key == :anyOf })
+      end
+
+      # The non-null JSON type a schema describes, or nil. Looks through the
+      # forms +nullable+ produces: a +[T, "null"]+ type array, and an
+      # +anyOf+ of one schema plus +{type: "null"}+.
+      #: (Hash[Symbol, untyped]?) -> String?
+      def primary_type(schema)
+        return nil unless schema.is_a?(Hash)
+
+        type = schema[:type] || schema["type"]
+        return type.to_s if type.is_a?(String) || type.is_a?(Symbol)
+        return (type.map(&:to_s) - ["null"]).first if type.is_a?(Array)
+
+        variants = schema[:anyOf] || schema["anyOf"]
+        return nil unless variants.is_a?(Array)
+
+        others = variants.reject { |v| v == NULL_SCHEMA || v == { "type" => "null" } }
+        others.size == 1 ? primary_type(others.first) : nil
       end
 
       # Map +RBS::Types::Record+ to a JSON Schema object. RBS handles
