@@ -4,6 +4,20 @@ All notable changes to this gem are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.11.0]
+
+A required param the caller left out is rejected before the handler runs, on
+a facade call as on a direct one. Behavior change, so a minor release.
+
+### Fixed
+- **A facade call no longer runs the target tool without its required params.** The MCP SDK checks `required` against the tool it was asked to call. For a facade that is the facade's own schema (`tool_name`, `arguments`), so the target's required params were never checked: `get_stage` without `workflow_id` reached the handler, which looked up `nil` and answered "Workflow not found". A model reading that concludes the workflow is missing or inaccessible, not that it left a param out. `RbsSchemaCompiler.filter_input` now raises `McpAuthorization::MissingRequiredInputKeysError` for any key in the caller's compiled `required` list that the params lack. A materialized tool returns it in-band, `<tool_name>: Missing required parameter: workflow_id. Nothing was executed. Accepted parameters: ...`, the same way as `UnknownInputKeysError`, so a facade caller sees the inner tool's name.
+- **The unknown-key check runs first.** A call that sends `stage_id` instead of `to_stage_id` is missing a required key and carries an unknown one. The unknown-key message lists the accepted params, which tells the caller what it meant, so that call still gets it.
+
+### Unchanged
+- **Direct calls.** The SDK already rejected a missing required param before the tool's `call`; that response is unchanged.
+- **Gated fields.** `required` comes from the caller's compiled schema, so a field required behind a predicate the caller fails is not demanded from that caller.
+- **`config.reject_unknown_input_keys = false`** still drops unknown keys; it does not turn off this check, which the SDK already applied to every direct call.
+
 ## [0.10.0]
 
 Nil-able RBS types compile to schemas that accept `null` in tool output.
