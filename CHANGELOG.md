@@ -11,6 +11,7 @@ a facade call as on a direct one. Behavior change, so a minor release.
 
 ### Fixed
 - **A facade call no longer runs the target tool without its required params.** The MCP SDK checks `required` against the tool it was asked to call. For a facade that is the facade's own schema (`tool_name`, `arguments`), so the target's required params were never checked: `get_stage` without `workflow_id` reached the handler, which looked up `nil` and answered "Workflow not found". A model reading that concludes the workflow is missing or inaccessible, not that it left a param out. `RbsSchemaCompiler.filter_input` now raises `McpAuthorization::MissingRequiredInputKeysError` for any key in the caller's compiled `required` list that the params lack. A materialized tool returns it in-band, `<tool_name>: Missing required parameter: workflow_id. Nothing was executed. Accepted parameters: ...`, the same way as `UnknownInputKeysError`, so a facade caller sees the inner tool's name.
+- **A required param sent as `null` counts as missing.** The handler receives `nil` either way, so `get_stage(workflow_id: nil)` answered "Workflow not found" like an omitted key. A field that admits `null` through `@nullable()` is exempt. On a direct call the SDK's schema validation already refused that `null`.
 - **The unknown-key check runs first.** A call that sends `stage_id` instead of `to_stage_id` is missing a required key and carries an unknown one. The unknown-key message lists the accepted params, which tells the caller what it meant, so that call still gets it.
 
 ### Unchanged

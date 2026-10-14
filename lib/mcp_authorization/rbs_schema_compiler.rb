@@ -205,13 +205,19 @@ module McpAuthorization
         project_against_schema(params, schema, defs_from(schema))
       end
 
-      # Runs after the unknown-key check, whose message names what a misnamed key should have been.
+      # Runs after the unknown-key check, which names the right key; a null counts as missing unless the field is +@nullable()+.
       #: (Hash[untyped, untyped], Hash[Symbol, untyped]) -> void
       def reject_missing_required_keys!(params, schema)
-        missing = (schema[:required] || []).map(&:to_s) - params.keys.map(&:to_s)
+        properties = schema[:properties] || {}
+        sent = params.to_h { |key, value| [key.to_s, value] }
+        missing = (schema[:required] || []).map(&:to_s).select do |key|
+          next true unless sent.key?(key)
+
+          sent[key].nil? && !null_admitting?(properties[key.to_sym] || properties[key] || {})
+        end
         return if missing.empty?
 
-        raise MissingRequiredInputKeysError.new(missing, (schema[:properties] || {}).keys.map(&:to_s).sort)
+        raise MissingRequiredInputKeysError.new(missing, properties.keys.map(&:to_s).sort)
       end
 
       # Raise when +params+ carries a top-level key outside +schema+'s

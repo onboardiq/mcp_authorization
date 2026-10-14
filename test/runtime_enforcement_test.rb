@@ -273,6 +273,40 @@ class RuntimeEnforcementTest < Minitest::Test
     assert_match(/\AMissing required parameter: id\. Nothing was executed\. Accepted parameters: force, id\./, err.message)
   end
 
+  # Present but null reaches the handler as nil just like an omitted key.
+  def test_filter_input_rejects_a_required_key_sent_as_null
+    handler = setup_fixture
+
+    err = assert_raises(McpAuthorization::MissingRequiredInputKeysError) do
+      C.filter_input(handler, { id: nil }, server_context: StubContext.new([:admin]))
+    end
+    assert_equal ["id"], err.missing_keys
+  end
+
+  def test_filter_input_accepts_null_for_a_required_nullable_key
+    @tmpdir = Dir.mktmpdir
+    path = File.join(@tmpdir, "fixture_handler.rb")
+    File.write(path, <<~RUBY)
+      class FixtureHandler
+        # @rbs type input = {
+        #   id: String,
+        #   note: String? @nullable()
+        # }
+
+        def call(id:, note:)
+        end
+      end
+    RUBY
+    load path
+    C.reset_cache!
+
+    assert_equal({ id: "x", note: nil }, C.filter_input(FixtureHandler, { id: "x", note: nil }, server_context: StubContext.new([])))
+    err = assert_raises(McpAuthorization::MissingRequiredInputKeysError) do
+      C.filter_input(FixtureHandler, { id: "x" }, server_context: StubContext.new([]))
+    end
+    assert_equal ["note"], err.missing_keys
+  end
+
   # The unknown name tells the caller what it should have sent, so it wins.
   def test_filter_input_reports_an_unknown_key_before_a_missing_required_one
     handler = setup_fixture
