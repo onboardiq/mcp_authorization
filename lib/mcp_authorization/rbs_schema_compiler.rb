@@ -67,6 +67,22 @@ module McpAuthorization
     end
   end
 
+  # Raised by +filter_input+ for a required param the caller left out; a facade call never reaches the SDK's check.
+  class MissingRequiredInputKeysError < ArgumentError
+    attr_reader :missing_keys, :accepted_keys
+
+    #: (Array[String], Array[String]) -> void
+    def initialize(missing_keys, accepted_keys)
+      @missing_keys = missing_keys
+      @accepted_keys = accepted_keys
+      super(
+        "Missing required parameter#{"s" if missing_keys.size > 1}: #{missing_keys.join(", ")}. " \
+        "Nothing was executed. Accepted parameters: #{accepted_keys.join(", ")}. " \
+        "Re-send the call with #{missing_keys.size > 1 ? "them" : "it"}."
+      )
+    end
+  end
+
   # Compiles RBS-style type annotations in Ruby source files into JSON Schema,
   # with per-request filtering based on +@requires+ permission tags.
   #
@@ -185,7 +201,23 @@ module McpAuthorization
         schema = compile_input_for_filter(handler_class, server_context: server_context)
         return params unless schema
         reject_unknown_input_keys!(params, schema) if McpAuthorization.config.reject_unknown_input_keys
+        reject_missing_required_keys!(params, schema)
         project_against_schema(params, schema, defs_from(schema))
+      end
+
+      # Runs after the unknown-key check, which names the right key; a null counts as missing unless the field is +@nullable()+.
+      #: (Hash[untyped, untyped], Hash[Symbol, untyped]) -> void
+      def reject_missing_required_keys!(params, schema)
+        properties = schema[:properties] || {}
+        sent = params.to_h { |key, value| [key.to_s, value] }
+        missing = (schema[:required] || []).map(&:to_s).select do |key|
+          next true unless sent.key?(key)
+
+          sent[key].nil? && !null_admitting?(properties[key.to_sym] || properties[key] || {})
+        end
+        return if missing.empty?
+
+        raise MissingRequiredInputKeysError.new(missing, properties.keys.map(&:to_s).sort)
       end
 
       # Raise when +params+ carries a top-level key outside +schema+'s

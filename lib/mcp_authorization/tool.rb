@@ -241,7 +241,7 @@ module McpAuthorization
               filtered_params = McpAuthorization::RbsSchemaCompiler.filter_input(
                 handler, params, server_context: effective_ctx
               )
-            rescue McpAuthorization::UnknownInputKeysError => e
+            rescue McpAuthorization::UnknownInputKeysError, McpAuthorization::MissingRequiredInputKeysError => e
               # In-band tool error (isError: true), not a JSON-RPC failure, so the
               # model reads the guidance. tool_name, not defn[:name]: a host may
               # rename the materialized class, and the caller knows the new name.

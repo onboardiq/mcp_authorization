@@ -722,6 +722,20 @@ class FacadeTest < Minitest::Test
     assert_match(/Accepted parameters: status\./, text)
   end
 
+  # The SDK checks required params against the facade's schema only, so the target's handler ran without them.
+  def test_dispatch_rejects_a_missing_required_argument_in_band_naming_the_target_tool
+    define_standard_tools
+    facet!
+    ctx = full_ctx
+    facade = FB.facade_for(domain: domain, name: "billing_tools", server_context: ctx)
+
+    response = facade.call(server_context: ctx, tool_name: "billing_#{domain}", arguments: {})
+    assert_instance_of MCP::Tool::Response, response
+    assert response.error?
+    text = response.content.first[:text]
+    assert_match(/\Abilling_#{domain}: Missing required parameter: invoice\. Nothing was executed\./, text)
+  end
+
   # The facade's own schema is tool_name + arguments. A key beside them was
   # ignored by dispatch, so an invented filter placed there ran the target
   # unfiltered and returned success.
